@@ -6,6 +6,17 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-05-28
+
+### Changed (CI)
+
+- **`publish.yml` now triggers on `push: tags: ["v*"]`** instead of `release: published`. Aligns with the trigger used by `aifsmjs` and `aiecsjs` in the same ai*js family. Prior to this, a manual `gh release create vX.Y.Z` was required after every tag push to fire the publish workflow.
+- **`publish.yml` now runs `verify:llms`** in the gate chain (was already in `prepublishOnly` via the new 0.2.0 script, but now also visible as a CI step for faster failure attribution).
+
+### Changed (docs)
+
+- **README opening unified across the ai*js family**: five-badge shields row (npm + CI + License + AI Generated + 繁體中文/English), one-line tagline as blockquote, ecosystem footer linking to the other two packages. Same shape in `README.md` and `README_ZHTW.md`.
+
 ## [0.2.0] - 2026-05-28
 
 ### Fixed (correctness)

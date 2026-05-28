@@ -1,8 +1,22 @@
 name: Publish to npm
 
+# Fires on any pushed semver tag (v0.2.0, v0.2.1, etc.) — matches the trigger
+# used by aifsmjs and aiecsjs in the same ai*js family. Aligned in v0.2.1
+# after the prior `release: published` trigger required a manual
+# `gh release create` step on every publish.
+#
+# Authentication: npm Trusted Publishing via OIDC. The package's trusted
+# publisher must be configured on npmjs.com:
+#   Packages → aibridgejs → Settings → Publishing access → Trusted publisher
+#   Repository:  yshengliao/aibridgejs
+#   Workflow:    publish.yml
+#
+# Manual runs also exposed via workflow_dispatch on the Actions page.
+
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -48,6 +62,9 @@ jobs:
 
       - name: Verify package exports
         run: pnpm verify:exports
+
+      - name: Verify llms-full.txt is in sync
+        run: pnpm verify:llms
 
       - name: Check bundle sizes
         run: pnpm check:size

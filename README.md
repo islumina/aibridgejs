@@ -1,15 +1,14 @@
 # aibridgejs
 
 [![npm version](https://img.shields.io/npm/v/aibridgejs.svg)](https://www.npmjs.com/package/aibridgejs)
+[![CI](https://github.com/yshengliao/aibridgejs/actions/workflows/ci.yml/badge.svg)](https://github.com/yshengliao/aibridgejs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
-[![Bundle size](https://img.shields.io/badge/core_gzip-%3C10_KB-blue.svg)](#)
-![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)
+[![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)](https://www.anthropic.com/claude-code)
+[![繁體中文](https://img.shields.io/badge/lang-繁體中文-red.svg)](README_ZHTW.md)
 
-Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response protocol with `AbortSignal` cancellation and adapter-isolated host coupling.
+> Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response protocol with `AbortSignal` cancellation and adapter-isolated host coupling.
 
-Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao).
-
-Read this in: [繁體中文](README_ZHTW.md)
+Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao) — see also [aifsmjs](https://github.com/yshengliao/aifsmjs) (FSM) and [aiecsjs](https://github.com/yshengliao/aiecsjs) (ECS).
 
 ---
 
