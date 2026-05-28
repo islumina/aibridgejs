@@ -35,10 +35,12 @@ npm install aibridgejs
 | 子路徑 | 內容 |
 |---|---|
 | `aibridgejs` | 核心 — `createBridge`、型別、錯誤類別 |
-| `aibridgejs/mock` | `createMockAdapter` — 回環傳輸，適用於開發與單元測試 |
-| `aibridgejs/iframe` | `createIframeAdapter` — 具備來源驗證的 `postMessage` 傳輸 |
-| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler 傳輸 |
-| `aibridgejs/detect` | `detectBridgeAdapter` — 依宿主全域變數自動挑選適配器 |
+| `aibridgejs/mock` | `createMockAdapter` — 回環傳輸，適用於開發與單元測試 · *僅供開發* |
+| `aibridgejs/iframe` | `createIframeAdapter` — 具備來源驗證的 `postMessage` 傳輸 · *純 web 安全* |
+| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler 傳輸 · *需要原生 shell* |
+| `aibridgejs/detect` | `detectBridgeAdapter` — 依宿主全域變數自動挑選適配器 · *純 web 安全（自動 fallback）* |
+
+完整穩定度合約與純 web 安全語意請見 [STABILITY_ZHTW.md](./STABILITY_ZHTW.md)。
 
 ---
 
@@ -262,6 +264,8 @@ async function callWithReset<T>(
 
 ### Mock 適配器
 
+> **Pure-web safety**: `僅供開發` — 回環傳輸；不適用於正式流量。
+
 ```ts
 import { createMockAdapter } from 'aibridgejs/mock';
 
@@ -288,6 +292,8 @@ console.log(messages[0].kind); // 'event'
 
 ### iframe 適配器
 
+> **Pure-web safety**: `純 web 安全` — 純 `postMessage` API；可在任何瀏覽器分頁中運作。
+
 ```ts
 import { createIframeAdapter } from 'aibridgejs/iframe';
 
@@ -304,7 +310,9 @@ iframe 適配器以 `postMessage` 送出訊息，並透過 `window.addEventListe
 
 `targetOrigin: '*'` 明確禁止，在建構時即會拋出例外。
 
-**自動偵測。** `detectBridgeAdapter` 會檢查宿主全域變數並回傳最適合的適配器。它放在獨立的子路徑，避免拖大 core 體積：
+**自動偵測。** `detectBridgeAdapter` 會檢查宿主全域變數並回傳最適合的適配器。它放在獨立的子路徑，避免拖大 core 體積。
+
+> **Pure-web safety**: `純 web 安全（自動 fallback）` — 未偵測到 shell 時自動 fallback 至 mock。
 
 ```ts
 import { createBridge } from 'aibridgejs';
@@ -321,6 +329,8 @@ const bridge = createBridge({ adapter });
 ---
 
 ### Flutter 適配器
+
+> **Pure-web safety**: `需要原生 shell` — 需要 `window.flutter_inappwebview.callHandler`；在純瀏覽器分頁中 `ready()` 會懸掛。
 
 ```ts
 import { createFlutterAdapter } from 'aibridgejs/flutter';

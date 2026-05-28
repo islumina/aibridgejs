@@ -35,10 +35,12 @@ The package ships five subpath exports:
 | Subpath | Contents |
 |---|---|
 | `aibridgejs` | Core — `createBridge`, types, error classes |
-| `aibridgejs/mock` | `createMockAdapter` — loopback for dev and unit tests |
-| `aibridgejs/iframe` | `createIframeAdapter` — origin-validated `postMessage` transport |
-| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler transport |
-| `aibridgejs/detect` | `detectBridgeAdapter` — auto-pick an adapter from host globals |
+| `aibridgejs/mock` | `createMockAdapter` — loopback for dev and unit tests · *dev only* |
+| `aibridgejs/iframe` | `createIframeAdapter` — origin-validated `postMessage` transport · *pure-web safe* |
+| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler transport · *requires native shell* |
+| `aibridgejs/detect` | `detectBridgeAdapter` — auto-pick an adapter from host globals · *pure-web safe (auto-fallback)* |
+
+See [STABILITY.md](./STABILITY.md) for the full stability contract and pure-web safety semantics.
 
 ---
 
@@ -265,6 +267,8 @@ async function callWithReset<T>(
 
 ### Mock adapter
 
+> **Pure-web safety**: `dev only` — loopback; not for production traffic.
+
 ```ts
 import { createMockAdapter } from 'aibridgejs/mock';
 
@@ -291,6 +295,8 @@ console.log(messages[0].kind); // 'event'
 
 ### iframe adapter
 
+> **Pure-web safety**: `pure-web safe` — pure `postMessage` API; works in any browser tab.
+
 ```ts
 import { createIframeAdapter } from 'aibridgejs/iframe';
 
@@ -307,7 +313,9 @@ The iframe adapter uses `postMessage` for outbound messages and `window.addEvent
 
 `targetOrigin: '*'` is explicitly forbidden and throws at construction time.
 
-**Auto-detection.** `detectBridgeAdapter` inspects the host globals and returns the most specific adapter available. It lives in its own subpath so the core stays small:
+**Auto-detection.** `detectBridgeAdapter` inspects the host globals and returns the most specific adapter available. It lives in its own subpath so the core stays small.
+
+> **Pure-web safety**: `pure-web safe (auto-fallback)` — falls back to mock when no shell is detected.
 
 ```ts
 import { createBridge } from 'aibridgejs';
@@ -324,6 +332,8 @@ Detection order: Flutter handler present → `createFlutterAdapter`; `window.par
 ---
 
 ### Flutter adapter
+
+> **Pure-web safety**: `requires native shell` — needs `window.flutter_inappwebview.callHandler`; `ready()` will hang in a plain browser tab.
 
 ```ts
 import { createFlutterAdapter } from 'aibridgejs/flutter';

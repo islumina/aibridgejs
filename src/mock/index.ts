@@ -9,6 +9,13 @@ export interface MockAdapter extends BridgeAdapter {
 
 type Subscriber = (message: BridgeEnvelope, meta?: SubscribeMeta) => void;
 
+/**
+ * Create a mock bridge adapter.
+ *
+ * Pure-web safety: `dev only` — in-memory loopback; not for production traffic.
+ *
+ * See [STABILITY.md](../STABILITY.md) for the full per-subpath safety table.
+ */
 export function createMockAdapter(): MockAdapter {
   const subscribers = new Set<Subscriber>();
   let disposed = false;

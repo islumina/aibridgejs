@@ -28,6 +28,13 @@ type Subscriber = (message: BridgeEnvelope, meta?: SubscribeMeta) => void;
 const DEFAULT_HANDLER_NAME = "aibridgejs";
 const DEFAULT_READY_EVENT = "flutterInAppWebViewPlatformReady";
 
+/**
+ * Create a Flutter bridge adapter.
+ *
+ * Pure-web safety: `requires native shell` — needs `host.flutter_inappwebview.callHandler`.
+ *
+ * See [STABILITY.md](../STABILITY.md) for the full per-subpath safety table.
+ */
 export function createFlutterAdapter(
   host: FlutterHost,
   options: FlutterAdapterOptions = {},

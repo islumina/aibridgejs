@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-05-29
+
+### Added (docs)
+
+- **`STABILITY.md` + `STABILITY_ZHTW.md`**: per-export stability contract and per-subpath **pure-web safety** labels. Each subpath now carries one of four tags: `pure-web safe`, `pure-web safe (auto-fallback)`, `requires native shell`, `dev only`. Consumers no longer need to read adapter source to judge whether a subpath is safe to import in a pure-web page (no iframe parent, no native shell). The contract also lodges placeholder design notes for the two long-running [draft] limitations (binary envelope, streaming RPC) so they have a stable URL before any implementation lands.
+
+### Changed (docs)
+
+- **`README.md` + `README_ZHTW.md`** subpath table and each adapter section now carry pure-web safety annotations and link to `STABILITY.md` for the full contract.
+- **JSDoc on `createMockAdapter` / `createIframeAdapter` / `createFlutterAdapter` / `detectBridgeAdapter`**: each factory now opens with a one-line pure-web safety statement plus a link to `STABILITY.md`. No signature changes.
+
+### Changed (tooling)
+
+- **`scripts/build-llms-full.mjs`** now includes `STABILITY.md` in the concatenated `llms-full.txt`, so LLM-facing context exposes the stability contract in the same fetch. Source documents in order: `README.md` → `STABILITY.md` → `CHANGELOG.md` → `CONTRIBUTING.md`.
+
+### Compatibility
+
+This release is **runtime-identical to 0.2.1**. No new exports, no removed exports, no signature changes. Bundle gzip stays well within budget for every subpath (measured at index 2351 / mock 753 / iframe 1161 / flutter 1243 / detect 1900 B; budgets unchanged). Coverage maintained at 97.86 / 91.38 / 100 / 100.
+
 ## [0.2.1] - 2026-05-28
 
 ### Changed (CI)

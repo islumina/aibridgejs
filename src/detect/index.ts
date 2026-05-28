@@ -15,6 +15,13 @@ interface DetectHost {
   removeEventListener?: unknown;
 }
 
+/**
+ * Auto-detect and create the most appropriate bridge adapter.
+ *
+ * Pure-web safety: `pure-web safe (auto-fallback)` — falls back to mock when no shell is detected.
+ *
+ * See [STABILITY.md](../STABILITY.md) for the full per-subpath safety table.
+ */
 export function detectBridgeAdapter(host: DetectHost, options: DetectOptions = {}): BridgeAdapter {
   if (host?.flutter_inappwebview?.callHandler) {
     return createFlutterAdapter(host as never, options.flutter);

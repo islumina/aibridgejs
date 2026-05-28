@@ -47,6 +47,13 @@ function inferPostTarget(host: IframeHost): IframePostTarget | null {
   return null;
 }
 
+/**
+ * Create an iframe bridge adapter.
+ *
+ * Pure-web safety: `pure-web safe` — pure postMessage API; requires exact targetOrigin (wildcard rejected).
+ *
+ * See [STABILITY.md](../STABILITY.md) for the full per-subpath safety table.
+ */
 export function createIframeAdapter(
   host: IframeHost,
   options: IframeAdapterOptions,

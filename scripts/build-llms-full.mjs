@@ -17,6 +17,7 @@ const checkOnly = process.argv.includes("--check");
 
 const sections = [
   { path: "README.md", title: null },
+  { path: "STABILITY.md", title: "Stability contract" },
   { path: "CHANGELOG.md", title: "Changelog" },
   { path: "CONTRIBUTING.md", title: "Contributing" },
 ];
