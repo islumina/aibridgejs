@@ -28,6 +28,9 @@ jobs:
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 
+      - name: Upgrade npm to a version that supports trusted publishing
+        run: npm install -g npm@latest
+
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -51,12 +54,8 @@ jobs:
 
       - name: Publish (dry run)
         if: ${{ inputs.dry_run == true }}
-        run: pnpm publish --no-git-checks --dry-run
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish --dry-run
 
-      - name: Publish to npm
+      - name: Publish to npm via OIDC Trusted Publishing
         if: ${{ inputs.dry_run != true }}
-        run: pnpm publish --no-git-checks --provenance
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: npm publish
