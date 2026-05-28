@@ -6,6 +6,41 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-05-28
+
+### Fixed
+
+- `createIframeAdapter` no longer silently drops every inbound message when
+  `expectedSource: undefined` is passed explicitly. The source-check guard now
+  treats `null` and `undefined` uniformly as "no source check", matching the
+  sentinel semantics used by the `"expectedSource" in options` distinction.
+
+### Changed
+
+- `isValidEnvelope` now rejects envelopes whose `timestamp` is `NaN`,
+  `Infinity`, or `-Infinity`. Previously only the `typeof === "number"` check
+  ran, which let non-finite numbers through.
+- Refactor `bridge.on()` listener registration to use a definite-assigned
+  `entry` instead of an `entryRef` indirection object. Behaviour is identical;
+  the change is purely for readability.
+
+### Removed (type-level, non-breaking at runtime)
+
+- `BridgeAdapter.post` no longer declares a second `options?: { signal? }`
+  parameter. No adapter implementation ever consumed it and `createBridge`
+  never passed it, so the runtime contract is unchanged. External adapter
+  authors who happened to type the parameter can remove it without code
+  changes.
+- `BridgePlatform` no longer includes the `"cocos"` string literal. No
+  adapter, test, or doc referenced it. Future platforms will be added
+  together with their adapter implementation.
+
+### Internal
+
+- `IframeAdapter.dispatchTestMessage` is now annotated `@internal` (JSDoc).
+  Still exported for the existing vitest suite, but signalled as not part
+  of the public contract.
+
 ## [0.1.2] - 2026-05-28
 
 ### Security

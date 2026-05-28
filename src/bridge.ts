@@ -250,21 +250,18 @@ export function createBridge(options: BridgeOptions): Bridge {
     const once = opts?.once === true;
 
     let removed = false;
-    const entryRef: { current?: ListenerEntry } = {};
+    // biome-ignore lint/style/useConst: hoisted so the unsubscribe closure can reference entry by identity
+    let entry!: ListenerEntry;
 
     const unsubscribe = (): void => {
       if (removed) return;
       removed = true;
-      if (entryRef.current) {
-        const s = events.get(event);
-        if (s) {
-          s.delete(entryRef.current);
-          if (s.size === 0) events.delete(event);
-        }
+      const s = events.get(event);
+      if (s) {
+        s.delete(entry);
+        if (s.size === 0) events.delete(event);
       }
-      if (signal) {
-        signal.removeEventListener("abort", unsubscribe);
-      }
+      signal?.removeEventListener("abort", unsubscribe);
     };
 
     const wrapped: BridgeListener<unknown> = once
@@ -274,8 +271,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         }
       : (listener as BridgeListener<unknown>);
 
-    const entry: ListenerEntry = { fn: wrapped, unsubscribe };
-    entryRef.current = entry;
+    entry = { fn: wrapped, unsubscribe };
     set.add(entry);
 
     if (signal) {

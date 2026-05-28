@@ -1,4 +1,4 @@
-export type BridgePlatform = "iframe" | "flutter" | "mock" | "cocos" | "unknown";
+export type BridgePlatform = "iframe" | "flutter" | "mock" | "unknown";
 
 export type RequestEnvelope = {
   kind: "request";
@@ -40,7 +40,7 @@ export type SubscribeMeta = {
 export interface BridgeAdapter {
   readonly platform: BridgePlatform;
   ready(signal?: AbortSignal): Promise<void>;
-  post(message: BridgeEnvelope, options?: { signal?: AbortSignal }): Promise<void>;
+  post(message: BridgeEnvelope): Promise<void>;
   subscribe(
     listener: (message: BridgeEnvelope, meta?: SubscribeMeta) => void,
     options?: { signal?: AbortSignal },

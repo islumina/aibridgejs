@@ -18,6 +18,16 @@ describe("isValidEnvelope", () => {
     expect(isValidEnvelope({ kind: "event", event: "x" })).toBe(false);
   });
 
+  test("rejects non-finite timestamps", () => {
+    expect(isValidEnvelope({ kind: "event", event: "x", timestamp: Number.NaN })).toBe(false);
+    expect(
+      isValidEnvelope({ kind: "event", event: "x", timestamp: Number.POSITIVE_INFINITY }),
+    ).toBe(false);
+    expect(
+      isValidEnvelope({ kind: "event", event: "x", timestamp: Number.NEGATIVE_INFINITY }),
+    ).toBe(false);
+  });
+
   test("rejects unknown kind with valid timestamp", () => {
     expect(isValidEnvelope({ kind: "weird", timestamp: 1 })).toBe(false);
     expect(isValidEnvelope({ kind: undefined, timestamp: 1 })).toBe(false);

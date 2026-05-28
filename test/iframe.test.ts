@@ -81,6 +81,27 @@ describe("aibridgejs iframe adapter", () => {
     expect(seen).toHaveLength(0);
   });
 
+  test("expectedSource: undefined skips source check (sentinel parity)", () => {
+    const host = createHost();
+    const adapter = createIframeAdapter(host, {
+      targetOrigin: "https://shell.example.com",
+      expectedSource: undefined,
+    });
+    const seen: BridgeEnvelope[] = [];
+    adapter.subscribe((envelope) => seen.push(envelope));
+
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: { id: "anything" } },
+    );
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test2", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: null },
+    );
+
+    expect(seen).toHaveLength(2);
+  });
+
   test("A16: malformed inbound is discarded", () => {
     const host = createHost();
     const adapter = createIframeAdapter(host, { targetOrigin: "https://shell.example.com" });

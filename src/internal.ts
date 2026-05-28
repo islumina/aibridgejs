@@ -10,7 +10,7 @@ export function isValidEnvelope(value: unknown): value is BridgeEnvelope {
     ok?: unknown;
     timestamp?: unknown;
   };
-  if (typeof v.timestamp !== "number") return false;
+  if (typeof v.timestamp !== "number" || !Number.isFinite(v.timestamp)) return false;
 
   switch (v.kind) {
     case "request":

@@ -25,6 +25,7 @@ export interface IframeAdapterOptions {
 
 export interface IframeAdapter extends BridgeAdapter {
   readonly platform: "iframe";
+  /** @internal Test-only helper. Not part of the public contract. */
   dispatchTestMessage(envelope: unknown, meta: { origin: string; source?: unknown }): void;
 }
 
@@ -65,7 +66,7 @@ export function createIframeAdapter(
   const messageHandler = (event: MessageEventLike): void => {
     if (disposed) return;
     if (event.origin !== targetOrigin) return;
-    if (expectedSource !== null && event.source !== expectedSource) return;
+    if (expectedSource != null && event.source !== expectedSource) return;
     if (!isValidEnvelope(event.data)) return;
     for (const sub of Array.from(subscribers)) {
       sub(event.data, { origin: event.origin, source: event.source });
@@ -109,6 +110,7 @@ export function createIframeAdapter(
       return unsubscribe;
     },
 
+    /** @internal Test-only helper. Not part of the public contract. */
     dispatchTestMessage(envelope, meta) {
       messageHandler({
         data: envelope,
