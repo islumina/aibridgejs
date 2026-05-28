@@ -1,0 +1,62 @@
+name: Publish to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Run npm publish in dry-run mode (no actual publish)"
+        type: boolean
+        default: false
+
+jobs:
+  publish:
+    name: Publish (node 22)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Test with coverage thresholds
+        run: pnpm coverage
+
+      - name: Build
+        run: pnpm build
+
+      - name: Verify package exports
+        run: pnpm verify:exports
+
+      - name: Check bundle sizes
+        run: pnpm check:size
+
+      - name: Publish (dry run)
+        if: ${{ inputs.dry_run == true }}
+        run: pnpm publish --no-git-checks --dry-run
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish to npm
+        if: ${{ inputs.dry_run != true }}
+        run: pnpm publish --no-git-checks --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

@@ -1,0 +1,618 @@
+# aibridgejs — 完整 LLM 脈絡
+
+> 不依賴傳輸層的橋接核心，支援 iframe、Flutter InAppWebView 與 mock runtime。採用 JSON 安全的請求/回應協定，內建 AbortSignal 取消機制，並透過適配器隔離宿主耦合。隸屬 ai*js micro-runtime 生態系。目標打包大小：core gzip < 10 KB。
+
+## 文件索引
+
+- [README](README.md): 完整英文文件。
+- [README（繁體中文）](README_ZHTW.md): 完整文件的繁體中文翻譯。
+- [llms.txt](llms.txt): 精簡 LLM 脈絡。
+- [llms-full.txt](llms-full.txt): 英文完整 LLM 脈絡。
+- [llms-full_ZHTW.txt](llms-full_ZHTW.txt): 本檔案——繁體中文完整 LLM 脈絡。
+
+---
+
+## 問題背景與設計原則
+
+混合應用將網頁內容嵌入原生容器。原生容器與網頁需要交換資料：具備型別回應的 RPC 呼叫、發出即忘的事件、以及就緒信號。三種常見宿主各有不同的語意：
+
+- **iframe**：以結構化複製序列化的 postMessage。需要精確的 targetOrigin 與發送方驗證，以防止跨來源注入。
+- **Flutter InAppWebView**：透過 Dart 端的 addJavaScriptHandler 登錄具名的 JS handler。handler 會將 Promise 回傳給 JS 端的 callHandler 呼叫。Android 上需要等待平台就緒事件，底層通道才會穩定。
+- **本機開發/測試**：上述兩者皆不需要。需要一個能夠閉環請求/回應的 mock 傳輸，且不依賴任何原生元件。
+
+aibridgejs 透過統一的 createBridge() API 抽象三種宿主。核心不知道 window、flutter_inappwebview 或 postMessage 的存在。所有宿主耦合都封裝在建構時傳入的適配器中。適配器以子路徑匯出形式發佈，不會打包未使用的宿主程式碼。
+
+---
+
+## 架構
+
+```
+應用層
+  └── createBridge({ adapter })
+        ├── ready()     — 等待 adapter.ready()
+        ├── call()      — 送出 request 封包；等待匹配的 response
+        ├── emit()      — 送出 event 封包；不追蹤回應
+        ├── on()        — 訂閱入站的 event 封包
+        ├── reset()     — 清除內部狀態
+        └── dispose()   — reject 待處理項目；移除監聽器；adapter.dispose()
+
+適配器（子路徑匯出）
+  ├── aibridgejs/mock     createMockAdapter()
+  ├── aibridgejs/iframe   createIframeAdapter(host, { targetOrigin })
+  └── aibridgejs/flutter  createFlutterAdapter(host, { handlerName, waitForReadyEvent, ... })
+```
+
+---
+
+## 完整型別定義
+
+### BridgeEnvelope
+
+```ts
+export type BridgeEnvelope =
+  | {
+      kind: 'request';
+      id: string;
+      method: string;
+      payload?: unknown;
+      timestamp: number;
+    }
+  | {
+      kind: 'response';
+      id: string;
+      ok: boolean;
+      payload?: unknown;
+      error?: {
+        code: string;
+        message: string;
+        detail?: unknown;
+      };
+      timestamp: number;
+    }
+  | {
+      kind: 'event';
+      event: string;
+      payload?: unknown;
+      timestamp: number;
+    };
+```
+
+### BridgeAdapter 介面
+
+```ts
+export interface BridgeAdapter {
+  readonly platform: 'iframe' | 'flutter' | 'mock' | 'cocos' | 'unknown';
+  ready(signal?: AbortSignal): Promise<void>;
+  post(message: BridgeEnvelope, options?: { signal?: AbortSignal }): Promise<void>;
+  subscribe(
+    listener: (message: BridgeEnvelope, meta?: unknown) => void,
+    options?: { signal?: AbortSignal },
+  ): () => void;
+  dispose(): void;
+}
+```
+
+### Bridge 介面（createBridge 的回傳型別）
+
+```ts
+export interface Bridge {
+  ready(options?: { signal?: AbortSignal }): Promise<void>;
+  call(
+    method: string,
+    payload?: unknown,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<unknown>;
+  emit(event: string, payload?: unknown): Promise<void>;
+  on(
+    event: string,
+    listener: (payload: unknown) => void,
+    options?: { signal?: AbortSignal; once?: boolean },
+  ): () => void;
+  platform(): 'iframe' | 'flutter' | 'mock' | 'cocos' | 'unknown';
+  reset(): void;
+  dispose(): void;
+}
+```
+
+### createBridge 選項
+
+```ts
+export interface BridgeOptions {
+  adapter: BridgeAdapter;
+  timeoutMs?: number; // 預設：10000
+}
+```
+
+---
+
+## 核心 API — 完整參考
+
+### createBridge(options)
+
+建構一個 Bridge。不發起任何 I/O；在 ready() 被 await 或 call()/emit() 內部觸發隱式就緒等待之前，不會查詢適配器。
+
+### ready(options?)
+
+委託給 adapter.ready(signal)。只 resolve 一次。若宿主已就緒，後續呼叫立即 resolve。所有 call() 與 emit() 呼叫內部會串接在此 resolve 之後，因此呼叫它們之前並非必須 await ready()——但在啟動時這樣做可以提早發現連線錯誤，而非等到第一個呼叫點才發現。
+
+若 AbortSignal 在適配器就緒前觸發，Promise 以 signal 的原因 reject。適配器自身的 ready() 必須正確處理此 signal。
+
+### call(method, payload?, options?)
+
+生成一個 UUID 作為 id 欄位。透過 adapter.post() 送出 'request' 封包。在 pending map 中以 id 為鍵儲存 { resolve, reject } 對。若設定了 timeoutMs，則透過 setTimeout 設定逾時。若提供了 signal，則登錄中止監聽器。
+
+當入站 'response' 的 id 匹配時：移除 pending 項目；清除逾時；以 payload resolve（ok === true）或以 response error 欄位衍生的錯誤 reject（ok === false）。
+
+逾時時：移除 pending 項目；以逾時錯誤 reject。
+中止時：移除 pending 項目；以 signal 的原因 reject。
+進行中呼叫 dispose() 時：移除所有 pending 項目；以 BridgeDisposedError reject 每一個。
+
+### emit(event, payload?)
+
+送出 'event' 封包。不設定 id，不建立 pending 項目。在 adapter.post() resolve 時 resolve。
+
+### on(event, listener, options?)
+
+在以事件名稱為鍵的內部事件 map 中登錄監聽器。當 bridge 接收到入站 'event' 封包時，向所有匹配的監聽器派送。
+
+若 once: true，監聽器會被包裝在一個自我移除的 proxy 中。
+若提供 signal，中止監聽器會在 signal 觸發時移除登錄。
+回傳一個取消訂閱函式，可立即移除登錄。
+
+### platform()
+
+回傳 adapter.platform。無需計算；僅是傳遞存取器。
+
+### reset()
+
+以 BridgeResetError reject 所有待處理的 call() Promise。移除所有 on() 監聽器。將內部就緒狀態重置為未 resolve，使下一次 call() 或 emit() 再次等待 adapter.ready()。不呼叫 adapter.dispose() 或 adapter.reset()。
+
+### dispose()
+
+以 BridgeDisposedError reject 所有待處理的 call() Promise。移除所有 on() 監聽器。呼叫 adapter.dispose()。dispose() 之後，所有 Bridge 方法同步拋出 BridgeDisposedError。
+
+---
+
+## 適配器參考
+
+### Mock 適配器
+
+```ts
+import { createMockAdapter } from 'aibridgejs/mock';
+
+const adapter = createMockAdapter();
+```
+
+立即就緒。adapter.post() 會同步將封包回環給透過 adapter.subscribe() 登錄的所有訂閱者。提供 adapter.receive(envelope) 以注入合成的入站訊息（在測試中用於向 bridge 推送 response/event 封包）。
+
+adapter.receive() 不屬於 BridgeAdapter 介面——它只是 mock 適配器型別上的測試專用擴充。
+
+### iframe 適配器
+
+```ts
+import { createIframeAdapter } from 'aibridgejs/iframe';
+
+const adapter = createIframeAdapter(host, {
+  targetOrigin: 'https://shell.example.com', // 必填；'*' 會拋出例外
+});
+```
+
+host 是擁有訊息監聽器的 window-like EventTarget。在嵌入的 frame 中，這是 window；在殼層 frame 中，這是 iframe 的 contentWindow。
+
+出站：host.postMessage(envelope, targetOrigin)。
+入站：host.addEventListener('message', handler)。每一則訊息驗證 event.origin === targetOrigin 且 event.source === expectedSource，不符合者被丟棄。
+
+提供 adapter.dispatchTestMessage(envelope, { origin }) 供 Vitest 使用，可在無真實 window 的情況下注入假的 MessageEvent。
+
+ready() 立即 resolve（假設適配器建立時 iframe 已載入完成；殼層頁面應僅在 iframe 載入後才建構適配器）。
+
+### Flutter 適配器
+
+```ts
+import { createFlutterAdapter } from 'aibridgejs/flutter';
+
+const adapter = createFlutterAdapter(host, {
+  handlerName: 'aibridgejs',
+  waitForReadyEvent?: boolean,            // 預設：true
+  readyEventName?: string,                // 預設：'flutterInAppWebViewPlatformReady'
+});
+```
+
+host 是暴露 flutter_inappwebview 的 window 或 window-like 物件。
+
+出站：host.flutter_inappwebview.callHandler(handlerName, envelope)。回傳一個 Promise，其以 Dart handler 的回傳值 resolve。
+入站：透過 adapter.receive() 登錄，由應用層在 window.__aibridgejs_push 入口處呼叫，Dart 端則透過 evaluateJavascript 呼叫此入口以推送事件。
+
+ready()：若 waitForReadyEvent 為 true，在 host 上等待名為 readyEventName 的 DOM 事件後才 resolve。若 ready() 被呼叫時事件已經觸發，則立即 resolve（透過在事件監聽器上設定旗標實現）。若 waitForReadyEvent 為 false，則立即 resolve。
+
+### detectBridgeAdapter
+
+`detectBridgeAdapter` 由 `aibridgejs/detect` 子路徑匯出，避免拖大核心套件體積。需明確 import：
+
+```ts
+import { detectBridgeAdapter } from 'aibridgejs/detect';
+
+const adapter = detectBridgeAdapter(host, {
+  iframe?: { targetOrigin: string },
+});
+```
+
+依以下順序檢查宿主全域：
+1. host.flutter_inappwebview?.callHandler 存在 → createFlutterAdapter(host)
+2. host.parent 存在且 host.parent !== host → createIframeAdapter(host, options.iframe)——若 options.iframe.targetOrigin 缺失或為 '*' 則拋出例外
+3. 其餘情況 → createMockAdapter()
+
+---
+
+## 安全性
+
+### iframe — 不可妥協的規則
+
+每一則入站 postMessage 必須驗證：
+- event.origin === targetOrigin（精確字串比對，區分大小寫）
+- event.source === 預期的來源 window 參考
+
+targetOrigin '*' 被禁止。若傳入此值，適配器在建構時即拋出例外。在正式環境中放寬此限制是跨來源注入漏洞：任何能向你的 frame 發送 postMessage 的跨來源頁面都能偽造任意的方法呼叫或事件。
+
+### Flutter InAppWebView — Dart 端強化
+
+```dart
+// 最低強化設定
+InAppWebView(
+  initialSettings: InAppWebViewSettings(
+    javaScriptEnabled: true,
+  ),
+  onWebViewCreated: (controller) {
+    controller.addJavaScriptHandler(
+      handlerName: 'aibridgejs',
+      callback: (args) async {
+        final envelope = args[0] as Map<String, dynamic>;
+        // 驗證並路由 envelope
+        return buildResponse(envelope);
+      },
+    );
+  },
+);
+```
+
+其他強化步驟：
+- 在 WebMessageListener 上設定 allowedOriginRules，限制能夠觸發 handler 的來源。
+- 使用 sub-frame 時，透過 isForMainFrame 檢查將 handler 限制為主 frame 專用。
+- 優先使用 InAppWebView userScripts 進行 bridge 初始化；user scripts 在頁面 JS 執行前便已就緒，可避免與 evaluateJavascript 的競態。
+- 絕不記錄 BridgeEnvelope payload：其中可能包含 session token、驗證參數或使用者個人資料。
+
+### 一般原則
+
+核心 bridge 靜默丟棄任何無法解析為 BridgeEnvelope 的入站訊息（缺少 kind、形狀錯誤、非 JSON 內容）。核心不輸出任何日誌。稽核日誌應放在包裝 adapter.subscribe() 的應用層攔截器中。
+
+---
+
+## Flutter 混合應用整合——完整範例
+
+### 架構
+
+```
+Flutter App
+  └── InAppWebView (flutter_inappwebview)
+        └── 網頁（Vite 建置，Svelte 5 或純 TypeScript）
+              ├── bridge.ts  — createFlutterAdapter + createBridge
+              └── game-init.ts — await bridge.ready(); bridge.call(...)
+```
+
+### Dart 端（完整）
+
+```dart
+import 'dart:convert';
+
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+
+class GameWebView extends StatefulWidget {
+  const GameWebView({super.key});
+
+  @override
+  State<GameWebView> createState() => _GameWebViewState();
+}
+
+class _GameWebViewState extends State<GameWebView> {
+  InAppWebViewController? _controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return InAppWebView(
+      initialUrlRequest: URLRequest(
+        url: WebUri('https://game.example.com/index.html'),
+      ),
+      initialSettings: InAppWebViewSettings(
+        javaScriptEnabled: true,
+      ),
+      onWebViewCreated: (controller) {
+        _controller = controller;
+
+        controller.addJavaScriptHandler(
+          handlerName: 'aibridgejs',
+          callback: (args) async {
+            final envelope = args[0] as Map<String, dynamic>;
+            final kind = envelope['kind'] as String?;
+
+            if (kind == 'request') {
+              final method = envelope['method'] as String;
+              final id = envelope['id'] as String;
+              final result = await _handleMethod(method, envelope['payload']);
+              return {
+                'kind': 'response',
+                'id': id,
+                'ok': true,
+                'payload': result,
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+              };
+            }
+
+            if (kind == 'event') {
+              _handleEvent(
+                envelope['event'] as String,
+                envelope['payload'],
+              );
+            }
+
+            return null;
+          },
+        );
+      },
+    );
+  }
+
+  // 從 Flutter 業務邏輯呼叫，向網頁推送事件。
+  Future<void> pushEvent(String event, Object payload) async {
+    final envelope = {
+      'kind': 'event',
+      'event': event,
+      'payload': payload,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    await _controller?.evaluateJavascript(
+      source: 'window.__aibridgejs_push(${jsonEncode(envelope)})',
+    );
+  }
+
+  Future<Object?> _handleMethod(String method, Object? payload) async {
+    switch (method) {
+      case 'session.getToken':
+        return {'token': await SessionService.instance.getToken()};
+      case 'player.getProfile':
+        return await PlayerService.instance.getProfile();
+      default:
+        throw UnimplementedError('未知的 bridge method：$method');
+    }
+  }
+
+  void _handleEvent(String event, Object? payload) {
+    // 路由網頁端發出的發出即忘事件。
+    switch (event) {
+      case 'player.ready':
+        GameController.instance.onPlayerReady(payload);
+      default:
+        break;
+    }
+  }
+}
+```
+
+### JavaScript 端（完整）
+
+```ts
+// bridge.ts — 在模組載入時初始化一次
+import { createBridge } from 'aibridgejs';
+import { createFlutterAdapter } from 'aibridgejs/flutter';
+
+const adapter = createFlutterAdapter(window, {
+  handlerName: 'aibridgejs',
+  waitForReadyEvent: true,
+  readyEventName: 'flutterInAppWebViewPlatformReady',
+});
+
+export const bridge = createBridge({ adapter, timeoutMs: 8000 });
+
+// 暴露接收鉤，使 Dart 的 pushEvent() 能夠注入封包。
+(window as unknown as Record<string, unknown>).__aibridgejs_push =
+  adapter.receive.bind(adapter);
+```
+
+```ts
+// game-init.ts — 進入點
+import { bridge } from './bridge';
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(new Error('bridge init timeout')), 10_000);
+
+try {
+  await bridge.ready({ signal: controller.signal });
+} catch {
+  showFatalError('無法連接至宿主，請重新啟動應用程式。');
+  return;
+}
+
+const { token } = await bridge.call(
+  'session.getToken',
+  { scope: 'game' },
+) as { token: string };
+
+bridge.on('game.forceEnd', (payload) => {
+  handleForceEnd(payload);
+});
+
+bridge.on('game.configUpdate', (payload) => {
+  applyConfig(payload);
+});
+
+await bridge.emit('player.ready', { playerId: currentPlayerId });
+```
+
+---
+
+## 測試——完整 Vitest 設定
+
+### vitest.config.ts
+
+```ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    clearMocks: true,
+    restoreMocks: true,
+    fakeTimers: { toFake: ['setTimeout', 'clearTimeout', 'Date'] },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+    },
+  },
+});
+```
+
+### 完整 TDD 驗收套件
+
+```ts
+import { describe, expect, test, vi } from 'vitest';
+import { createBridge } from 'aibridgejs';
+import { createMockAdapter } from 'aibridgejs/mock';
+
+describe('aibridgejs — TDD 驗收套件', () => {
+  test('1. 就緒閘控 — 適配器就緒後 resolve', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    await expect(bridge.ready()).resolves.toBeUndefined();
+  });
+
+  test('2. ID 對應 — 並行回應各自獨立 resolve', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== 'request') return;
+      adapter.receive({
+        kind: 'response',
+        id: envelope.id,
+        ok: true,
+        payload: { echo: envelope.method },
+        timestamp: Date.now(),
+      });
+    });
+
+    await bridge.ready();
+
+    const [a, b] = await Promise.all([
+      bridge.call('method.a'),
+      bridge.call('method.b'),
+    ]);
+
+    expect((a as { echo: string }).echo).toBe('method.a');
+    expect((b as { echo: string }).echo).toBe('method.b');
+  });
+
+  test('3. 逾時 reject — 移除待處理項目', async () => {
+    vi.useFakeTimers();
+
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter, timeoutMs: 1000 });
+
+    await bridge.ready();
+
+    const pending = bridge.call('silent.method');
+    vi.advanceTimersByTime(1001);
+
+    await expect(pending).rejects.toThrow(/timeout/i);
+
+    vi.useRealTimers();
+  });
+
+  test('4. 中止 reject — 移除待處理項目', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    await bridge.ready();
+
+    const pending = bridge.call('silent.method', undefined, {
+      signal: controller.signal,
+    });
+    controller.abort(new Error('user cancelled'));
+
+    await expect(pending).rejects.toThrow('user cancelled');
+  });
+
+  test('5. 格式錯誤丟棄 — 非 BridgeEnvelope 訊息被忽略', async () => {
+    const adapter = createMockAdapter();
+    const errors: unknown[] = [];
+
+    const bridge = createBridge({ adapter });
+    bridge.on('any.event', (p) => errors.push(p));
+
+    await bridge.ready();
+
+    adapter.receive({ not: 'a valid envelope' } as never);
+
+    expect(errors).toHaveLength(0);
+  });
+
+  test('6. 來源拒絕 — 來源錯誤的 iframe 訊息被丟棄', async () => {
+    const { createIframeAdapter } = await import('aibridgejs/iframe');
+    const received: unknown[] = [];
+
+    const adapter = createIframeAdapter(new EventTarget() as never, {
+      targetOrigin: 'https://shell.example.com',
+    });
+
+    adapter.subscribe((envelope) => received.push(envelope));
+
+    adapter.dispatchTestMessage(
+      { kind: 'event', event: 'shell.ready', timestamp: Date.now() },
+      { origin: 'https://evil.example.com' },
+    );
+
+    expect(received).toHaveLength(0);
+  });
+
+  test('7. Dispose reject — 以 BridgeDisposedError reject 所有進行中呼叫', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+
+    await bridge.ready();
+
+    const pending = bridge.call('slow.method');
+    bridge.dispose();
+
+    await expect(pending).rejects.toThrow(/disposed/i);
+  });
+});
+```
+
+---
+
+## 開發藍圖
+
+| 階段 | 範疇 | 狀態 |
+|---|---|---|
+| v0.1 | 核心 + iframe 適配器 + Flutter 適配器 + mock 適配器 | 開發中 |
+| 後續 | `aibridgejs-cocos-native` — Cocos JsbBridgeWrapper 適配器（獨立套件） | 計畫中 |
+| 後續 | `.svelte.ts` bridge helper，用於 Svelte 5 響應式狀態 | 計畫中 |
+| 不在計畫內 | Cocos web 建置適配器（視同 iframe） | — |
+| 不在計畫內 | WebSocket 傳輸 | — |
+
+`aibridgejs-cocos-native` 作為獨立套件的原因：Cocos 原生 bridge（JsbBridgeWrapper）不是執行緒安全的；iOS 的 Objective-C 反射路徑涉及 App Store 審核規範；其版本生命週期與網頁端適配器相互獨立。
+
+---
+
+## 生態系合約（ai*js）
+
+aibridgejs 遵循 ai*js micro-runtime 生態系合約：
+
+| 關切點 | 規則 |
+|---|---|
+| 建構 | createBridge(options)，適用於長生命週期物件 |
+| 釋放 | dispose() 為必要；釋放計時器、監聽器與待處理項目 |
+| 重置 | reset() 存在，因為不重新配置記憶體而語意復用是有效場景 |
+| 事件 | on(type, fn, { once, signal }) 回傳取消訂閱函式；映射平台 EventTarget 語意 |
+| 取消 | 每個非同步公開方法接受 AbortSignal |
+| 適配器 | 宿主特定程式碼置於 BridgeAdapter 介面之後 |
+| 核心純粹性 | 核心不從 svelte、pixi.js、window 或 flutter_inappwebview 匯入 |

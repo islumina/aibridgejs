@@ -1,0 +1,619 @@
+# aibridgejs — Full LLM Context
+
+> Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response protocol with AbortSignal cancellation and adapter-isolated host coupling. Part of the ai*js micro-runtime ecosystem. Target bundle size: <10 KB gzip.
+
+## Documentation Index
+
+- [README](README.md): Full English documentation.
+- [README (繁體中文)](README_ZHTW.md): Traditional Chinese translation.
+- [llms.txt](llms.txt): Concise LLM context.
+- [llms-full.txt](llms-full.txt): This file — comprehensive LLM context.
+
+---
+
+## Problem and Design Rationale
+
+Hybrid apps embed web content inside native containers. The native container and the web page need to exchange data: RPC calls with typed responses, fire-and-forget events, readiness signals. Three common hosts each speak a different dialect:
+
+- **iframe**: postMessage with structured-clone serialisation. Requires exact targetOrigin and sender validation to prevent cross-origin injection.
+- **Flutter InAppWebView**: Named JS handlers registered via addJavaScriptHandler on the Dart side. The handler returns a Promise to the JS callHandler call. Requires a platform-ready event on Android before the channel is stable.
+- **Local dev / test**: Neither of the above. Needs a mock transport that closes the request/response loop without any native dependency.
+
+aibridgejs abstracts all three behind one createBridge() API. The core knows nothing about window, flutter_inappwebview, or postMessage. All host coupling lives in adapters passed at construction time. Adapters ship as subpath exports so no unused host code is bundled.
+
+---
+
+## Architecture
+
+```
+Application
+  └── createBridge({ adapter })
+        ├── ready()     — waits for adapter.ready()
+        ├── call()      — post request envelope; await matched response
+        ├── emit()      — post event envelope; no response tracked
+        ├── on()        — subscribe to inbound event envelopes
+        ├── reset()     — clear internal state
+        └── dispose()   — reject pending; remove listeners; adapter.dispose()
+
+Adapters (subpath exports)
+  ├── aibridgejs/mock     createMockAdapter()
+  ├── aibridgejs/iframe   createIframeAdapter(host, { targetOrigin })
+  └── aibridgejs/flutter  createFlutterAdapter(host, { handlerName, waitForReadyEvent, ... })
+```
+
+---
+
+## Full Type Definitions
+
+### BridgeEnvelope
+
+```ts
+export type BridgeEnvelope =
+  | {
+      kind: 'request';
+      id: string;
+      method: string;
+      payload?: unknown;
+      timestamp: number;
+    }
+  | {
+      kind: 'response';
+      id: string;
+      ok: boolean;
+      payload?: unknown;
+      error?: {
+        code: string;
+        message: string;
+        detail?: unknown;
+      };
+      timestamp: number;
+    }
+  | {
+      kind: 'event';
+      event: string;
+      payload?: unknown;
+      timestamp: number;
+    };
+```
+
+### BridgeAdapter interface
+
+```ts
+export interface BridgeAdapter {
+  readonly platform: 'iframe' | 'flutter' | 'mock' | 'cocos' | 'unknown';
+  ready(signal?: AbortSignal): Promise<void>;
+  post(message: BridgeEnvelope, options?: { signal?: AbortSignal }): Promise<void>;
+  subscribe(
+    listener: (message: BridgeEnvelope, meta?: unknown) => void,
+    options?: { signal?: AbortSignal },
+  ): () => void;
+  dispose(): void;
+}
+```
+
+### Bridge interface (returned by createBridge)
+
+```ts
+export interface Bridge {
+  ready(options?: { signal?: AbortSignal }): Promise<void>;
+  call(
+    method: string,
+    payload?: unknown,
+    options?: { timeoutMs?: number; signal?: AbortSignal },
+  ): Promise<unknown>;
+  emit(event: string, payload?: unknown): Promise<void>;
+  on(
+    event: string,
+    listener: (payload: unknown) => void,
+    options?: { signal?: AbortSignal; once?: boolean },
+  ): () => void;
+  platform(): 'iframe' | 'flutter' | 'mock' | 'cocos' | 'unknown';
+  reset(): void;
+  dispose(): void;
+}
+```
+
+### createBridge options
+
+```ts
+export interface BridgeOptions {
+  adapter: BridgeAdapter;
+  timeoutMs?: number; // default: 10000
+}
+```
+
+---
+
+## Core API — Full Reference
+
+### createBridge(options)
+
+Constructs a Bridge. Does not start any I/O; the adapter is not queried until ready() is awaited or an implicit readiness wait occurs inside call()/emit().
+
+### ready(options?)
+
+Delegates to adapter.ready(signal). Resolves once. Subsequent calls resolve immediately if the host is already ready. All call() and emit() invocations internally chain on this resolution, so there is no requirement to await ready() before calling them — but doing so surfaces connection errors at startup rather than at the first call site.
+
+If the AbortSignal fires before the adapter becomes ready, the promise rejects with the signal's reason. The adapter's own ready() must handle the signal correctly.
+
+### call(method, payload?, options?)
+
+Generates a UUID for the id field. Posts a 'request' envelope via adapter.post(). Stores a { resolve, reject } pair keyed by id in a pending map. Sets a timeout via setTimeout if timeoutMs is configured. Registers an abort listener on the signal if provided.
+
+On inbound 'response' with matching id: removes the pending entry; calls adapter.post() timeout is cleared; resolves with payload (ok === true) or rejects with an error derived from the response error field (ok === false).
+
+On timeout: removes pending entry; rejects with a timeout error.
+On abort: removes pending entry; rejects with the signal's reason.
+On dispose() called mid-flight: removes all pending entries; rejects each with BridgeDisposedError.
+
+### emit(event, payload?)
+
+Posts a 'event' envelope. No id is set; no pending entry is created. Resolves when adapter.post() resolves.
+
+### on(event, listener, options?)
+
+Registers listener in an internal event map keyed by event name. When the bridge receives an inbound 'event' envelope, it dispatches to all matching listeners.
+
+If once: true, the listener is wrapped in a self-removing proxy.
+If a signal is provided, an abort listener removes the registration when the signal fires.
+Returns an unsubscribe function that removes the registration immediately.
+
+### platform()
+
+Returns adapter.platform. No computation; just a pass-through accessor.
+
+### reset()
+
+Rejects all pending call() promises with a BridgeResetError. Removes all on() listeners. Resets internal readiness state to unresolved so that the next call() or emit() will wait on adapter.ready() again. Does not call adapter.dispose() or adapter.reset().
+
+### dispose()
+
+Rejects all pending call() promises with BridgeDisposedError. Removes all on() listeners. Calls adapter.dispose(). After dispose(), all Bridge methods throw BridgeDisposedError synchronously.
+
+---
+
+## Adapter Reference
+
+### Mock adapter
+
+```ts
+import { createMockAdapter } from 'aibridgejs/mock';
+
+const adapter = createMockAdapter();
+```
+
+Immediately ready. adapter.post() echoes the envelope synchronously to all subscribers registered via adapter.subscribe(). Exposes adapter.receive(envelope) to inject synthetic inbound messages (used in tests to push response/event envelopes into the bridge).
+
+adapter.receive() is not part of the BridgeAdapter interface — it is a test-facing extension on the mock adapter type only.
+
+### iframe adapter
+
+```ts
+import { createIframeAdapter } from 'aibridgejs/iframe';
+
+const adapter = createIframeAdapter(host, {
+  targetOrigin: 'https://shell.example.com', // required; '*' throws
+});
+```
+
+host is the window-like EventTarget that owns the message listener. In the embedded frame, this is window. In the shell frame, this is the iframe's contentWindow.
+
+Outbound: host.postMessage(envelope, targetOrigin).
+Inbound: host.addEventListener('message', handler). Each message validates event.origin === targetOrigin and event.source === expectedSource. Invalid messages are discarded.
+
+Exposes adapter.dispatchTestMessage(envelope, { origin }) for use in Vitest to inject fake MessageEvents without a real window.
+
+ready() resolves immediately (iframe is assumed ready when the adapter is created; the shell page should construct the adapter only after the iframe has loaded).
+
+### Flutter adapter
+
+```ts
+import { createFlutterAdapter } from 'aibridgejs/flutter';
+
+const adapter = createFlutterAdapter(host, {
+  handlerName: 'aibridgejs',
+  waitForReadyEvent?: boolean,            // default: true
+  readyEventName?: string,                // default: 'flutterInAppWebViewPlatformReady'
+});
+```
+
+host is window or a window-like object exposing flutter_inappwebview.
+
+Outbound: host.flutter_inappwebview.callHandler(handlerName, envelope). Returns a Promise that resolves with the Dart handler's return value.
+Inbound: registered via adapter.receive() called by the application at the window.__aibridgejs_push entry point, which the Dart side invokes with evaluateJavascript for push events.
+
+ready(): if waitForReadyEvent is true, waits for a DOM event named readyEventName on host before resolving. If the event has already fired before ready() is called, resolves immediately (uses a flag set on the event listener). If waitForReadyEvent is false, resolves immediately.
+
+### detectBridgeAdapter
+
+`detectBridgeAdapter` ships from the `aibridgejs/detect` subpath so the core stays small. Import it explicitly:
+
+```ts
+import { detectBridgeAdapter } from 'aibridgejs/detect';
+
+const adapter = detectBridgeAdapter(host, {
+  iframe?: { targetOrigin: string },
+});
+```
+
+Inspects host globals in this order:
+1. host.flutter_inappwebview?.callHandler present → createFlutterAdapter(host)
+2. host.parent exists and host.parent !== host → createIframeAdapter(host, options.iframe) — throws if options.iframe.targetOrigin is absent or is '*'
+3. Fallback → createMockAdapter()
+
+---
+
+## Security
+
+### iframe — Non-negotiable rules
+
+Every inbound postMessage must validate:
+- event.origin === targetOrigin (exact string equality, case-sensitive)
+- event.source === the expected source window reference
+
+targetOrigin '*' is forbidden. The adapter throws at construction if it is supplied. In production, relaxing this is a cross-origin injection vulnerability: any page that can postMessage to your frame can forge method calls or events.
+
+### Flutter InAppWebView — Dart-side hardening
+
+```dart
+// Minimal hardened setup
+InAppWebView(
+  initialSettings: InAppWebViewSettings(
+    javaScriptEnabled: true,
+  ),
+  onWebViewCreated: (controller) {
+    controller.addJavaScriptHandler(
+      handlerName: 'aibridgejs',
+      callback: (args) async {
+        final envelope = args[0] as Map<String, dynamic>;
+        // validate and route envelope
+        return buildResponse(envelope);
+      },
+    );
+  },
+);
+```
+
+Additional hardening:
+- allowedOriginRules on WebMessageListener restricts which origins can trigger handlers.
+- Restrict handlers to main frame (isForMainFrame check) when sub-frames are not used.
+- Prefer InAppWebView userScripts for bridge init code; they execute before page JS and avoid a setup race with evaluateJavascript.
+- Never log BridgeEnvelope payloads: they may contain session tokens, auth parameters, or user PII.
+
+### General
+
+The core bridge silently discards any inbound message that fails to parse as BridgeEnvelope (missing kind, wrong shape, non-JSON body). It emits no logs. Audit logging belongs in an application-level interceptor wrapping adapter.subscribe().
+
+---
+
+## Flutter Hybrid App Integration — Full Example
+
+### Architecture
+
+```
+Flutter App
+  └── InAppWebView (flutter_inappwebview)
+        └── Web page (Vite build, Svelte 5 or plain TS)
+              ├── bridge.ts  — createFlutterAdapter + createBridge
+              └── game-init.ts — await bridge.ready(); bridge.call(...)
+```
+
+### Dart side (complete)
+
+```dart
+import 'dart:convert';
+
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+
+class GameWebView extends StatefulWidget {
+  const GameWebView({super.key});
+
+  @override
+  State<GameWebView> createState() => _GameWebViewState();
+}
+
+class _GameWebViewState extends State<GameWebView> {
+  InAppWebViewController? _controller;
+
+  @override
+  Widget build(BuildContext context) {
+    return InAppWebView(
+      initialUrlRequest: URLRequest(
+        url: WebUri('https://game.example.com/index.html'),
+      ),
+      initialSettings: InAppWebViewSettings(
+        javaScriptEnabled: true,
+      ),
+      onWebViewCreated: (controller) {
+        _controller = controller;
+
+        controller.addJavaScriptHandler(
+          handlerName: 'aibridgejs',
+          callback: (args) async {
+            final envelope = args[0] as Map<String, dynamic>;
+            final kind = envelope['kind'] as String?;
+
+            if (kind == 'request') {
+              final method = envelope['method'] as String;
+              final id = envelope['id'] as String;
+              final result = await _handleMethod(method, envelope['payload']);
+              return {
+                'kind': 'response',
+                'id': id,
+                'ok': true,
+                'payload': result,
+                'timestamp': DateTime.now().millisecondsSinceEpoch,
+              };
+            }
+
+            if (kind == 'event') {
+              _handleEvent(
+                envelope['event'] as String,
+                envelope['payload'],
+              );
+            }
+
+            return null;
+          },
+        );
+      },
+    );
+  }
+
+  // Call from Flutter business logic to push an event to the web page.
+  Future<void> pushEvent(String event, Object payload) async {
+    final envelope = {
+      'kind': 'event',
+      'event': event,
+      'payload': payload,
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+    };
+    await _controller?.evaluateJavascript(
+      source: 'window.__aibridgejs_push(${jsonEncode(envelope)})',
+    );
+  }
+
+  Future<Object?> _handleMethod(String method, Object? payload) async {
+    switch (method) {
+      case 'session.getToken':
+        return {'token': await SessionService.instance.getToken()};
+      case 'player.getProfile':
+        return await PlayerService.instance.getProfile();
+      default:
+        throw UnimplementedError('Unknown bridge method: $method');
+    }
+  }
+
+  void _handleEvent(String event, Object? payload) {
+    // Route fire-and-forget events emitted from the web page.
+    switch (event) {
+      case 'player.ready':
+        GameController.instance.onPlayerReady(payload);
+      default:
+        break;
+    }
+  }
+}
+```
+
+### JavaScript side (complete)
+
+```ts
+// bridge.ts — initialise once at module load
+import { createBridge } from 'aibridgejs';
+import { createFlutterAdapter } from 'aibridgejs/flutter';
+
+const adapter = createFlutterAdapter(window, {
+  handlerName: 'aibridgejs',
+  waitForReadyEvent: true,
+  readyEventName: 'flutterInAppWebViewPlatformReady',
+});
+
+export const bridge = createBridge({ adapter, timeoutMs: 8000 });
+
+// Expose the receive hook so the Dart pushEvent() can inject envelopes.
+(window as unknown as Record<string, unknown>).__aibridgejs_push =
+  adapter.receive.bind(adapter);
+```
+
+```ts
+// game-init.ts — entry point
+import { bridge } from './bridge';
+
+const controller = new AbortController();
+setTimeout(() => controller.abort(new Error('bridge init timeout')), 10_000);
+
+try {
+  await bridge.ready({ signal: controller.signal });
+} catch {
+  showFatalError('Cannot connect to host. Please restart the app.');
+  return;
+}
+
+const { token } = await bridge.call(
+  'session.getToken',
+  { scope: 'game' },
+) as { token: string };
+
+bridge.on('game.forceEnd', (payload) => {
+  handleForceEnd(payload);
+});
+
+bridge.on('game.configUpdate', (payload) => {
+  applyConfig(payload);
+});
+
+await bridge.emit('player.ready', { playerId: currentPlayerId });
+```
+
+---
+
+## Testing — Full Vitest Setup
+
+### vitest.config.ts
+
+```ts
+import { defineConfig } from 'vitest/config';
+
+export default defineConfig({
+  test: {
+    environment: 'jsdom',
+    clearMocks: true,
+    restoreMocks: true,
+    fakeTimers: { toFake: ['setTimeout', 'clearTimeout', 'Date'] },
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+    },
+  },
+});
+```
+
+### Full TDD gate suite
+
+```ts
+import { describe, expect, test, vi } from 'vitest';
+import { createBridge } from 'aibridgejs';
+import { createMockAdapter } from 'aibridgejs/mock';
+
+describe('aibridgejs — TDD gate suite', () => {
+  test('1. ready gating — resolves once adapter is available', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    await expect(bridge.ready()).resolves.toBeUndefined();
+  });
+
+  test('2. ID correlation — concurrent responses resolve independently', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== 'request') return;
+      adapter.receive({
+        kind: 'response',
+        id: envelope.id,
+        ok: true,
+        payload: { echo: envelope.method },
+        timestamp: Date.now(),
+      });
+    });
+
+    await bridge.ready();
+
+    const [a, b] = await Promise.all([
+      bridge.call('method.a'),
+      bridge.call('method.b'),
+    ]);
+
+    expect((a as { echo: string }).echo).toBe('method.a');
+    expect((b as { echo: string }).echo).toBe('method.b');
+  });
+
+  test('3. timeout rejection — removes pending entry', async () => {
+    vi.useFakeTimers();
+
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter, timeoutMs: 1000 });
+
+    await bridge.ready();
+
+    const pending = bridge.call('silent.method');
+    vi.advanceTimersByTime(1001);
+
+    await expect(pending).rejects.toThrow(/timeout/i);
+
+    vi.useRealTimers();
+  });
+
+  test('4. abort rejection — removes pending entry', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    await bridge.ready();
+
+    const pending = bridge.call('silent.method', undefined, {
+      signal: controller.signal,
+    });
+    controller.abort(new Error('user cancelled'));
+
+    await expect(pending).rejects.toThrow('user cancelled');
+  });
+
+  test('5. malformed discard — non-BridgeEnvelope message is ignored', async () => {
+    const adapter = createMockAdapter();
+    const errors: unknown[] = [];
+
+    const bridge = createBridge({ adapter });
+    bridge.on('any.event', (p) => errors.push(p));
+
+    await bridge.ready();
+
+    // Inject a malformed message directly into the adapter.
+    adapter.receive({ not: 'a valid envelope' } as never);
+
+    // No error thrown; no event emitted.
+    expect(errors).toHaveLength(0);
+  });
+
+  test('6. origin rejection — wrong-origin iframe message is discarded', async () => {
+    const { createIframeAdapter } = await import('aibridgejs/iframe');
+    const received: unknown[] = [];
+
+    const adapter = createIframeAdapter(new EventTarget() as never, {
+      targetOrigin: 'https://shell.example.com',
+    });
+
+    adapter.subscribe((envelope) => received.push(envelope));
+
+    adapter.dispatchTestMessage(
+      { kind: 'event', event: 'shell.ready', timestamp: Date.now() },
+      { origin: 'https://evil.example.com' },
+    );
+
+    expect(received).toHaveLength(0);
+  });
+
+  test('7. dispose rejection — rejects all pending calls with BridgeDisposedError', async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+
+    await bridge.ready();
+
+    const pending = bridge.call('slow.method');
+    bridge.dispose();
+
+    await expect(pending).rejects.toThrow(/disposed/i);
+  });
+});
+```
+
+---
+
+## Roadmap
+
+| Phase | Scope | Status |
+|---|---|---|
+| v0.1 | Core + iframe adapter + Flutter adapter + mock adapter | In development |
+| Later | `aibridgejs-cocos-native` — Cocos JsbBridgeWrapper adapter (separate package) | Planned |
+| Later | `.svelte.ts` bridge helper for Svelte 5 reactive state | Planned |
+| Not planned | Cocos web-build adapter (treated as iframe) | — |
+| Not planned | WebSocket transport | — |
+
+`aibridgejs-cocos-native` is a separate package because the Cocos native bridge (JsbBridgeWrapper) is not thread-safe, the iOS Objective-C reflection path carries App Store review caveats, and its version lifecycle is independent from the web-focused adapters.
+
+---
+
+## House Contract (ai*js ecosystem)
+
+aibridgejs follows the ai*js micro-runtime house contract:
+
+| Concern | Rule |
+|---|---|
+| Construction | createBridge(options) for long-lived objects |
+| Disposal | dispose() required; frees timers, listeners, and pending entries |
+| Reset | reset() exists because semantic reuse without reallocation is valid here |
+| Events | on(type, fn, { once, signal }) returns unsubscribe; mirrors platform EventTarget semantics |
+| Cancellation | Every async public method accepts AbortSignal |
+| Adapters | Host-specific code behind the BridgeAdapter interface |
+| Core purity | No imports from svelte, pixi.js, window, or flutter_inappwebview in core |

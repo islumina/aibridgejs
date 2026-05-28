@@ -5,47 +5,47 @@
 [![Bundle size](https://img.shields.io/badge/core_gzip-%3C10_KB-blue.svg)](#)
 ![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)
 
-Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response protocol with `AbortSignal` cancellation and adapter-isolated host coupling.
+不依賴傳輸層的橋接核心，支援 iframe、Flutter InAppWebView 與 mock runtime。採用 JSON 安全的請求/回應協定，內建 `AbortSignal` 取消機制，並透過適配器隔離宿主耦合。
 
-Part of the [ai\*js micro-runtime ecosystem](https://github.com/yshengliao).
+隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao)。
 
-Read this in: [繁體中文](README_ZHTW.md)
-
----
-
-## Overview
-
-Different host runtimes speak different bridging dialects. An iframe listens on `postMessage`. A Flutter InAppWebView exposes named JS handlers and fires a platform-ready event. A local dev environment needs neither. `aibridgejs` provides a single stable API on top of all of them.
-
-The core package is pure TypeScript. It knows nothing about `window`, `flutter_inappwebview`, or any other host global. All host-specific logic lives in an adapter that you supply at construction time. The adapters ship as subpath exports of the same package, so you only load what you need.
-
-Request/response correlation works through a string `id` embedded in every envelope. Concurrent `call()` invocations each get a unique id; responses are matched back to their pending entry by that id. Readiness gating ensures that no call is attempted before the adapter has signalled the host is ready to receive — which matters on Android InAppWebView where the JS handler registry is available before the underlying Flutter bridge is stable.
+其他語言版本：[English](README.md)
 
 ---
 
-## Installation
+## 概述
+
+不同的宿主 runtime 各有各的橋接語意。iframe 透過 `postMessage` 接收訊息，Flutter InAppWebView 暴露具名的 JS handler 並觸發平台就緒事件，本機開發環境則兩者都不需要。`aibridgejs` 在這三者之上提供同一套穩定的 API。
+
+核心套件是純 TypeScript，完全不知道 `window`、`flutter_inappwebview` 或任何宿主全域變數的存在。所有宿主特定邏輯都封裝在適配器內，由你在建構時傳入。適配器以子路徑匯出的形式隨套件發佈，按需載入即可。
+
+請求/回應的對應關係透過嵌入每個封包的字串 `id` 實現。並行的 `call()` 呼叫各自取得唯一的 id，回應依據該 id 匹配回對應的待處理項目。就緒閘控確保在適配器通知宿主已就緒之前不會發出任何呼叫——這在 Android InAppWebView 上尤為重要，因為 JS handler 的登錄表可能在底層 Flutter bridge 穩定之前便已可用。
+
+---
+
+## 安裝
 
 ```sh
 pnpm add aibridgejs
-# or
+# 或
 npm install aibridgejs
 ```
 
-The package ships five subpath exports:
+套件提供五個子路徑匯出：
 
-| Subpath | Contents |
+| 子路徑 | 內容 |
 |---|---|
-| `aibridgejs` | Core — `createBridge`, types, error classes |
-| `aibridgejs/mock` | `createMockAdapter` — loopback for dev and unit tests |
-| `aibridgejs/iframe` | `createIframeAdapter` — origin-validated `postMessage` transport |
-| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler transport |
-| `aibridgejs/detect` | `detectBridgeAdapter` — auto-pick an adapter from host globals |
+| `aibridgejs` | 核心 — `createBridge`、型別、錯誤類別 |
+| `aibridgejs/mock` | `createMockAdapter` — 回環傳輸，適用於開發與單元測試 |
+| `aibridgejs/iframe` | `createIframeAdapter` — 具備來源驗證的 `postMessage` 傳輸 |
+| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView JS handler 傳輸 |
+| `aibridgejs/detect` | `detectBridgeAdapter` — 依宿主全域變數自動挑選適配器 |
 
 ---
 
-## Quick Start
+## 快速開始
 
-The mock adapter loops outbound messages back to the subscriber. It needs no host environment, which makes it ideal for local development and unit tests.
+Mock 適配器會將出站訊息回環給訂閱者，不需要任何宿主環境，非常適合本機開發與單元測試。
 
 ```ts
 import { createBridge } from 'aibridgejs';
@@ -54,31 +54,31 @@ import { createMockAdapter } from 'aibridgejs/mock';
 const adapter = createMockAdapter();
 const bridge = createBridge({ adapter, timeoutMs: 5000 });
 
-// Wait for the adapter to become ready.
+// 等待適配器就緒。
 await bridge.ready();
 
-// Make a typed RPC call.
+// 發出具型別的 RPC 呼叫。
 const result = await bridge.call('session.getToken', { scope: 'game' });
 console.log(result);
 
-// Listen for host-pushed events.
+// 監聽宿主推送的事件。
 const off = bridge.on('game.stateChanged', (payload) => {
   console.log('state:', payload);
 });
 
-// Emit a notification toward the host (no response expected).
+// 向宿主發出通知（不期待回應）。
 await bridge.emit('player.ready', { playerId: 'p1' });
 
-// Teardown.
+// 釋放資源。
 off();
 bridge.dispose();
 ```
 
 ---
 
-## Protocol
+## 傳輸協定
 
-Every message crossing the bridge is a `BridgeEnvelope` — a discriminated union with three variants.
+每一則跨橋訊息都是一個 `BridgeEnvelope`——一個具有三種變體的判別聯合型別。
 
 ```ts
 export type BridgeEnvelope =
@@ -109,11 +109,11 @@ export type BridgeEnvelope =
     };
 ```
 
-The `kind` field is the discriminant. Adapters must produce and consume `BridgeEnvelope` values only; they must not add or remove fields. All payloads must be JSON-serialisable — no `undefined`, `Date`, `Map`, `Set`, or class instances.
+`kind` 欄位是判別子。適配器只能生產與消費 `BridgeEnvelope` 值，不得增減欄位。所有 payload 必須是 JSON 可序列化的資料——不接受 `undefined`、`Date`、`Map`、`Set` 或類別實例。
 
 ---
 
-## Core API
+## 核心 API
 
 ### `createBridge(options)`
 
@@ -121,12 +121,12 @@ The `kind` field is the discriminant. Adapters must produce and consume `BridgeE
 import { createBridge } from 'aibridgejs';
 
 const bridge = createBridge({
-  adapter: BridgeAdapter,   // required
-  timeoutMs?: number,       // per-call timeout in ms; default 10000
+  adapter: BridgeAdapter,   // 必填
+  timeoutMs?: number,       // 每次呼叫的逾時毫秒數，預設 10000
 });
 ```
 
-Returns a `Bridge` object with the following methods.
+回傳一個 `Bridge` 物件，包含以下方法。
 
 ---
 
@@ -136,9 +136,9 @@ Returns a `Bridge` object with the following methods.
 ready(options?: { signal?: AbortSignal }): Promise<void>
 ```
 
-Resolves when the adapter reports the host is ready to receive messages. All subsequent `call()` and `emit()` invocations wait on readiness internally, so explicit `await bridge.ready()` is optional but recommended at startup to surface connection errors early.
+當適配器回報宿主已就緒時 resolve。後續的 `call()` 與 `emit()` 呼叫內部會自動等待就緒，因此明確呼叫 `await bridge.ready()` 並非必要，但建議在啟動時呼叫以提早發現連線錯誤。
 
-Rejects with the `AbortSignal` reason if cancelled before the adapter becomes ready.
+若在適配器就緒前取消，則以 `AbortSignal` 的原因 reject。
 
 ---
 
@@ -152,14 +152,14 @@ call(
 ): Promise<unknown>
 ```
 
-Sends a `request` envelope and waits for the matched `response`. Rejects if:
+送出 `request` 封包並等待配對的 `response`。在以下情況下 reject：
 
-- The response `ok` is `false` (application-level error from the host).
-- The timeout elapses (default: `options.timeoutMs` ?? constructor `timeoutMs`).
-- The `AbortSignal` fires before a response arrives.
-- `dispose()` is called while the call is in flight.
+- 回應的 `ok` 為 `false`（宿主端的應用層錯誤）。
+- 逾時（預設值：`options.timeoutMs` ?? 建構子的 `timeoutMs`）。
+- 回應到達前 `AbortSignal` 觸發。
+- 呼叫進行中時 `dispose()` 被呼叫。
 
-Pending entries are removed from the internal map in all rejection paths to prevent leaks.
+所有 reject 路徑都會從內部 map 移除待處理項目，防止記憶體洩漏。
 
 ---
 
@@ -169,7 +169,7 @@ Pending entries are removed from the internal map in all rejection paths to prev
 emit(event: string, payload?: unknown): Promise<void>
 ```
 
-Sends an `event` envelope toward the host. Fire-and-forget — no response is expected and no pending entry is tracked.
+向宿主送出 `event` 封包。發出即忘——不期待回應，也不追蹤任何待處理項目。
 
 ---
 
@@ -183,7 +183,7 @@ on(
 ): () => void
 ```
 
-Registers a listener for inbound `event` envelopes whose `event` field matches the given name. Returns an unsubscribe function. Passing `once: true` auto-removes the listener after the first invocation. Passing a `signal` removes the listener when the signal aborts.
+為 `event` 欄位符合指定名稱的入站 `event` 封包登錄監聽器，回傳取消訂閱函式。傳入 `once: true` 會在第一次觸發後自動移除監聽器；傳入 `signal` 會在 signal 中止時移除監聽器。
 
 ---
 
@@ -193,7 +193,7 @@ Registers a listener for inbound `event` envelopes whose `event` field matches t
 platform(): 'iframe' | 'flutter' | 'mock' | 'cocos' | 'unknown'
 ```
 
-Returns the platform string reported by the active adapter. Useful for conditional behaviour without coupling to a specific adapter import.
+回傳目前適配器所回報的平台字串。可用於撰寫條件性行為，而無需耦合到特定的適配器 import。
 
 ---
 
@@ -203,7 +203,7 @@ Returns the platform string reported by the active adapter. Useful for condition
 reset(): void
 ```
 
-Resets internal state — clears pending calls, event listeners, and readiness state — without disposing the adapter. Use when the host reloads the web page inside the same native container and you need to reinitialise without constructing a new bridge.
+重置內部狀態——清除待處理呼叫、事件監聽器與就緒狀態——但不釋放適配器。適用於宿主在同一個原生容器內重新載入網頁，且需要重新初始化而不重建 bridge 物件的場景。
 
 ---
 
@@ -213,13 +213,13 @@ Resets internal state — clears pending calls, event listeners, and readiness s
 dispose(): void
 ```
 
-Rejects all pending `call()` promises, removes all event listeners, and calls `adapter.dispose()`. After `dispose()`, the bridge must not be used.
+Reject 所有待處理的 `call()` Promise、移除所有事件監聽器，並呼叫 `adapter.dispose()`。`dispose()` 之後不得再使用該 bridge 物件。
 
 ---
 
-## Adapters
+## 適配器
 
-### Mock adapter
+### Mock 適配器
 
 ```ts
 import { createMockAdapter } from 'aibridgejs/mock';
@@ -227,7 +227,7 @@ import { createMockAdapter } from 'aibridgejs/mock';
 const adapter = createMockAdapter();
 ```
 
-The mock adapter is immediately ready (no async wait). Outbound messages posted via the adapter's `post()` method are echoed synchronously to every active subscriber, including the bridge itself. This closes the loop for unit tests: the test can subscribe to the adapter before creating the bridge, inspect what the bridge sends, and push synthetic responses back.
+Mock 適配器立即就緒（不需要非同步等待）。透過 `post()` 送出的出站訊息會同步回環給所有訂閱者，包括 bridge 本身。這讓單元測試形成閉環：測試可以在建立 bridge 之前訂閱適配器，檢查 bridge 送出什麼，再推送合成的回應。
 
 ```ts
 const adapter = createMockAdapter();
@@ -245,7 +245,7 @@ console.log(messages[0].kind); // 'event'
 
 ---
 
-### iframe adapter
+### iframe 適配器
 
 ```ts
 import { createIframeAdapter } from 'aibridgejs/iframe';
@@ -255,15 +255,15 @@ const adapter = createIframeAdapter(window, {
 });
 ```
 
-The iframe adapter uses `postMessage` for outbound messages and `window.addEventListener('message', ...)` for inbound. Every inbound message is validated:
+iframe 適配器以 `postMessage` 送出訊息，並透過 `window.addEventListener('message', ...)` 接收入站訊息。每一則入站訊息都會經過驗證：
 
-1. `event.origin` must exactly match `targetOrigin`.
-2. `event.source` must match the expected frame reference.
-3. The parsed body must be a valid `BridgeEnvelope` (has `kind`); malformed messages are silently discarded.
+1. `event.origin` 必須與 `targetOrigin` 完全吻合。
+2. `event.source` 必須符合預期的 frame 參考。
+3. 解析後的內容必須是合法的 `BridgeEnvelope`（具有 `kind` 欄位）；格式錯誤的訊息會被靜默丟棄。
 
-`targetOrigin: '*'` is explicitly forbidden and throws at construction time.
+`targetOrigin: '*'` 明確禁止，在建構時即會拋出例外。
 
-**Auto-detection.** `detectBridgeAdapter` inspects the host globals and returns the most specific adapter available. It lives in its own subpath so the core stays small:
+**自動偵測。** `detectBridgeAdapter` 會檢查宿主全域變數並回傳最適合的適配器。它放在獨立的子路徑，避免拖大 core 體積：
 
 ```ts
 import { createBridge } from 'aibridgejs';
@@ -275,11 +275,11 @@ const adapter = detectBridgeAdapter(window, {
 const bridge = createBridge({ adapter });
 ```
 
-Detection order: Flutter handler present → `createFlutterAdapter`; `window.parent !== window` → `createIframeAdapter`; fallback → `createMockAdapter`.
+偵測順序：存在 Flutter handler → `createFlutterAdapter`；`window.parent !== window` → `createIframeAdapter`；其餘情況 → `createMockAdapter`。
 
 ---
 
-### Flutter adapter
+### Flutter 適配器
 
 ```ts
 import { createFlutterAdapter } from 'aibridgejs/flutter';
@@ -291,29 +291,29 @@ const adapter = createFlutterAdapter(window, {
 });
 ```
 
-The Flutter adapter maps `post()` to `window.flutter_inappwebview.callHandler(handlerName, envelope)` and receives inbound messages via a JS handler registered from the Dart side.
+Flutter 適配器將 `post()` 對應到 `window.flutter_inappwebview.callHandler(handlerName, envelope)`，並透過 Dart 端登錄的 JS handler 接收入站訊息。
 
-`waitForReadyEvent: true` defers `ready()` resolution until the named DOM event fires. This is necessary on some Android configurations where `flutter_inappwebview` is present in the global scope before the underlying message channel is fully established. On iOS and newer Android builds the event fires quickly; the option adds negligible latency and prevents a class of race-condition bugs.
+`waitForReadyEvent: true` 會延遲 `ready()` 的 resolve，直到指定的 DOM 事件觸發為止。這在部分 Android 設定上是必要的——`flutter_inappwebview` 可能在底層訊息通道完全建立之前便已出現在全域作用域。在 iOS 和較新的 Android 版本上，該事件觸發迅速；啟用此選項增加的延遲可忽略不計，卻能防止一整類競態條件錯誤。
 
-All payloads exchanged with the handler must be JSON-serialisable. The InAppWebView `callHandler` bridge performs its own JSON round-trip; class instances, `Date`, and non-enumerable properties are silently dropped.
+與 handler 交換的所有 payload 必須是 JSON 可序列化的資料。InAppWebView 的 `callHandler` bridge 會自行執行 JSON 往返序列化；類別實例、`Date` 及非可列舉屬性會被靜默捨棄。
 
 ---
 
-## Security
+## 安全性
 
 ### iframe
 
-| Requirement | Consequence of violation |
+| 要求 | 違反後果 |
 |---|---|
-| `targetOrigin` must be an exact HTTPS origin | Wildcard `*` throws at adapter construction |
-| Every inbound `event.origin` is validated | Wrong-origin messages are discarded without error |
-| Every inbound `event.source` is validated | Messages from unexpected frame references are discarded |
+| `targetOrigin` 必須是精確的 HTTPS origin | 萬用字元 `*` 在適配器建構時即拋出例外 |
+| 每一則入站訊息的 `event.origin` 都會被驗證 | 來源錯誤的訊息會被靜默丟棄 |
+| 每一則入站訊息的 `event.source` 都會被驗證 | 來自非預期 frame 參考的訊息會被靜默丟棄 |
 
-Never relax `targetOrigin` to `*` in production. A cross-origin page that can `postMessage` to your frame can forge any method call or event if origin validation is absent.
+正式環境中絕不可將 `targetOrigin` 設為 `*`。若缺乏來源驗證，任何能向你的 frame 發送 `postMessage` 的跨來源頁面都能偽造任意的方法呼叫或事件。
 
 ### Flutter InAppWebView
 
-Recommended Dart-side hardening:
+建議的 Dart 端強化設定：
 
 ```dart
 InAppWebView(
@@ -333,22 +333,22 @@ InAppWebView(
 );
 ```
 
-Additional hardening steps:
+其他強化步驟：
 
-- Set `allowedOriginRules` on the native `WebMessageListener` to restrict which origins can send messages.
-- Restrict handlers to the main frame when the web content does not use sub-frames.
-- Use InAppWebView user scripts for bridge initialisation rather than `evaluateJavascript` after page load; user scripts execute before page JS runs and eliminate a setup race.
-- Never log `BridgeEnvelope` payloads that may carry session tokens or user identifiers.
+- 在原生端的 `WebMessageListener` 設定 `allowedOriginRules`，限制能夠傳送訊息的來源。
+- 當網頁內容不使用子 frame 時，將 handler 限制為主 frame 專用。
+- 使用 InAppWebView user scripts 初始化 bridge，而非在頁面載入後呼叫 `evaluateJavascript`；user scripts 在頁面 JS 執行前便已就緒，可消除初始化競態。
+- 絕不在日誌中記錄可能包含 session token 或使用者識別碼的 `BridgeEnvelope` payload。
 
-### General
+### 一般原則
 
-The core bridge discards any inbound message that does not parse as a valid `BridgeEnvelope`. It logs nothing itself; if you need audit logging, wrap `adapter.subscribe` in your own interceptor.
+核心 bridge 會丟棄任何無法解析為合法 `BridgeEnvelope` 的入站訊息，本身不輸出任何日誌。若需要稽核日誌，請在你自己的攔截器中包裝 `adapter.subscribe`。
 
 ---
 
-## Flutter Hybrid App Integration
+## Flutter 混合應用整合
 
-This section shows a complete wiring pattern for a Flutter app that embeds a web game page and communicates through `aibridgejs`.
+本節展示 Flutter 應用嵌入網頁遊戲頁面並透過 `aibridgejs` 進行通訊的完整接線模式。
 
 ```
 Flutter App
@@ -357,7 +357,7 @@ Flutter App
               └── aibridgejs (Flutter adapter)
 ```
 
-### Dart side
+### Dart 端
 
 ```dart
 import 'dart:convert';
@@ -453,7 +453,7 @@ class _GameWebViewState extends State<GameWebView> {
 }
 ```
 
-### JavaScript side
+### JavaScript 端
 
 ```ts
 // bridge.ts — run once at game startup
@@ -486,7 +486,7 @@ bridge.on('game.forceEnd', (payload) => {
 });
 ```
 
-### Readiness and timeout handling
+### 就緒與逾時處理
 
 ```ts
 const controller = new AbortController();
@@ -504,9 +504,9 @@ try {
 
 ---
 
-## Testing
+## 測試
 
-### Vitest configuration
+### Vitest 設定
 
 ```ts
 // vitest.config.ts
@@ -526,21 +526,21 @@ export default defineConfig({
 });
 ```
 
-### TDD gate cases
+### TDD 驗收條件
 
-These cases define the minimum correctness bar for any `aibridgejs` implementation.
+下列條件定義了任何 `aibridgejs` 實作的最低正確性門檻。
 
-| Case | Description |
+| 條件 | 說明 |
 |---|---|
-| Ready gating | `call()` and `emit()` must queue until `ready()` resolves |
-| ID correlation | Concurrent `call()` invocations resolve independently by their response `id` |
-| Timeout rejection | Pending call rejects after the configured `timeoutMs` and removes its pending entry |
-| Abort rejection | Aborting a signal mid-flight rejects the call and removes its pending entry |
-| Malformed discard | An inbound message that is not a valid `BridgeEnvelope` is silently dropped |
-| Origin rejection | An iframe message from a wrong `origin` or `source` is silently dropped |
-| Dispose rejection | `dispose()` rejects all in-flight calls with a `BridgeDisposedError` |
+| 就緒閘控 | `call()` 與 `emit()` 必須在 `ready()` resolve 前排隊等候 |
+| ID 對應 | 並行的 `call()` 呼叫各自依照回應的 `id` 獨立 resolve |
+| 逾時 reject | 待處理呼叫在設定的 `timeoutMs` 後 reject，並移除待處理項目 |
+| 中止 reject | signal 在呼叫進行中觸發時 reject，並移除待處理項目 |
+| 格式錯誤丟棄 | 不是合法 `BridgeEnvelope` 的入站訊息會被靜默丟棄 |
+| 來源拒絕 | 來自錯誤 `origin` 或 `source` 的 iframe 訊息會被靜默丟棄 |
+| Dispose reject | `dispose()` 以 `BridgeDisposedError` reject 所有進行中的呼叫 |
 
-### Representative test suite
+### 測試範例
 
 ```ts
 import { describe, expect, test, vi } from 'vitest';
@@ -646,26 +646,26 @@ describe('aibridgejs', () => {
 
 ---
 
-## Roadmap
+## 開發藍圖
 
-| Phase | Scope |
+| 階段 | 範疇 |
 |---|---|
-| v0.1 | Core + `createBridge`, iframe adapter, Flutter adapter, mock adapter |
-| Later | `aibridgejs-cocos-native` — separate package for Cocos `JsbBridgeWrapper` |
-| Later | `.svelte.ts` helper for reactive bridge state in Svelte 5 apps |
+| v0.1 | 核心 + `createBridge`、iframe 適配器、Flutter 適配器、mock 適配器 |
+| 後續 | `aibridgejs-cocos-native` — 獨立套件，對應 Cocos 的 `JsbBridgeWrapper` |
+| 後續 | `.svelte.ts` helper，用於 Svelte 5 應用中的響應式 bridge 狀態 |
 
-`aibridgejs-cocos-native` is intentionally a separate package because the Cocos native bridge (`JsbBridgeWrapper`) has thread-safety caveats, an Objective-C reflection path on iOS with App Store review implications, and an independent version lifecycle from the web-focused adapters.
-
----
-
-## Contributing
-
-All contributions must satisfy the TDD gate cases listed in the [Testing](#testing) section. A PR that passes the gate suite and adds a runnable example for any new behaviour will be reviewed promptly.
-
-Bug reports should include a minimal failing test case using the mock adapter. Security issues should be reported privately before public disclosure.
+`aibridgejs-cocos-native` 刻意獨立為另一個套件，原因如下：Cocos 原生 bridge（`JsbBridgeWrapper`）存在執行緒安全疑慮、iOS 上的 Objective-C 反射路徑涉及 App Store 審核規範，且版本生命週期與網頁端適配器不同步。
 
 ---
 
-## License
+## 貢獻
 
-MIT. See [LICENSE](LICENSE).
+所有貢獻必須滿足[測試](#測試)一節所列的 TDD 驗收條件。通過驗收套件並為任何新行為附上可執行範例的 PR，都會獲得即時審查。
+
+Bug 回報請附上使用 mock 適配器的最小重現測試案例。安全性問題請在公開揭露前私下回報。
+
+---
+
+## 授權
+
+MIT。詳見 [LICENSE](LICENSE)。
