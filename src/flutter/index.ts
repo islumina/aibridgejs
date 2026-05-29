@@ -44,6 +44,7 @@ export function createFlutterAdapter(
   const readyEventName = options.readyEventName ?? DEFAULT_READY_EVENT;
 
   const subscribers = new Set<Subscriber>();
+  const subCleanups = new Set<() => void>();
   let disposed = false;
 
   let resolveReady: (() => void) | undefined;
@@ -127,8 +128,10 @@ export function createFlutterAdapter(
       const signal = opts?.signal;
       const unsubscribe = (): void => {
         subscribers.delete(listener);
+        subCleanups.delete(unsubscribe);
         signal?.removeEventListener("abort", unsubscribe);
       };
+      subCleanups.add(unsubscribe);
 
       if (signal) {
         if (signal.aborted) {
@@ -154,6 +157,7 @@ export function createFlutterAdapter(
         rejectReady = undefined;
         r(new BridgeDisposedError());
       }
+      for (const off of Array.from(subCleanups)) off();
       subscribers.clear();
     },
   };

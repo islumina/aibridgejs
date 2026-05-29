@@ -244,7 +244,7 @@ Every error class extends `BridgeError`. Treat them as a discriminated union whe
 | `BridgeResetError` | A `reset()` happened while the call was in flight (or in the ready-wait that precedes it). | **Yes.** | Re-issue the call. The caller's `AbortSignal` is unaffected; a simple `for` loop with a max-retry cap is enough. |
 | `BridgeTimeoutError` | No response within `timeoutMs` (default 10 s, overridable per call). | **Yes.** | Retry with exponential backoff. If the host is genuinely down, the retry will surface as another timeout or a transport error — both are still observable. |
 | `BridgeRemoteError` | The host responded with `ok: false`. Holds the host's `code`, `message`, and optional `detail`. | **Depends on the remote contract.** | Switch on `error.code` and follow the host's documented policy. Generic retry will often re-trigger the same application error. |
-| `BridgeDisposedError` | `dispose()` was called before or during the call (or the iframe adapter detected its target window vanished). | **No.** | The bridge is gone. Construct a new `createBridge(...)` if you still need the channel. |
+| `BridgeDisposedError` | `dispose()` was called before or during the call. | **No.** | The bridge is gone. Construct a new `createBridge(...)` if you still need the channel. |
 | `BridgeError` | Catch-all base. Used if you `throw` from your own adapter or want to catch all of the above. | — | Inspect `error.name` to discriminate. |
 
 The runtime does NOT auto-retry. Wrap the call in your own retry helper when the policy is "transient errors are recoverable":
@@ -373,7 +373,7 @@ All payloads exchanged with the handler must be JSON-serialisable. The InAppWebV
 |---|---|
 | `targetOrigin` must be an exact HTTPS origin | Wildcard `*` throws at adapter construction |
 | Every inbound `event.origin` is validated | Wrong-origin messages are discarded without error |
-| Every inbound `event.source` is validated | Messages from unexpected frame references are discarded |
+| `event.source` is validated against the expected frame (unless disabled with `expectedSource: null`) | Messages from unexpected frames are discarded when source-checking is enabled |
 
 Never relax `targetOrigin` to `*` in production. A cross-origin page that can `postMessage` to your frame can forge any method call or event if origin validation is absent.
 
@@ -580,7 +580,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'jsdom',
+    environment: 'node',
     clearMocks: true,
     restoreMocks: true,
     fakeTimers: { toFake: ['setTimeout', 'clearTimeout', 'Date'] },
@@ -860,6 +860,25 @@ All notable changes to this project are documented here. The format follows
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.3.2] - 2026-05-29
+
+Findings from a second independent Codex review pass.
+
+### Fixed (resource leaks)
+
+- **Adapter `dispose()` invokes each subscription's unsubscribe** ([src/mock/index.ts](src/mock/index.ts), [src/iframe/index.ts](src/iframe/index.ts), [src/flutter/index.ts](src/flutter/index.ts)): `dispose()` previously called only `subscribers.clear()`, leaving any `"abort"` listener registered on an externally-supplied `AbortSignal` orphaned until that signal eventually fires. Each adapter now maintains a `subCleanups` registry and iterates it in `dispose()`, completing the 0.3.1 `subscribe()` unsubscribe cleanup so a disposed adapter fully releases listeners held on external signals.
+
+### Fixed (docs)
+
+- **Completed `event.source` opt-out wording in Security tables** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md), [llms.txt](llms.txt)): the 0.3.1 fix updated `STABILITY.md` and prose sections but missed the iframe Security tables and the `llms.txt` index sentence. Wording now consistently reflects that source-checking can be disabled with `expectedSource: null`.
+- **Corrected Vitest example from `environment: 'jsdom'` to `'node'`** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md)): `jsdom` was removed as a devDependency in 0.3.1; the example config now matches the actual test environment.
+- **Removed an unimplemented `BridgeDisposedError` trigger from the error table** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md)): the table claimed the iframe adapter raises it when it "detects its target window vanished" — no such detection exists; the adapter raises `BridgeDisposedError` only on explicit `dispose()`.
+- **Qualified the `AbortSignal` claim in `llms.txt`**: `ready()` and `call()` accept an `AbortSignal`; `emit()` is fire-and-forget and takes none. The previous "all async methods" wording overstated the surface.
+
+### Compatibility
+
+Non-breaking; no API change. The leak fix only affects the dispose path for subscriptions made with an external `AbortSignal`.
 
 ## [0.3.1] - 2026-05-29
 

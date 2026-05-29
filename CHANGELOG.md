@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-05-29
+
+Findings from a second independent Codex review pass.
+
+### Fixed (resource leaks)
+
+- **Adapter `dispose()` invokes each subscription's unsubscribe** ([src/mock/index.ts](src/mock/index.ts), [src/iframe/index.ts](src/iframe/index.ts), [src/flutter/index.ts](src/flutter/index.ts)): `dispose()` previously called only `subscribers.clear()`, leaving any `"abort"` listener registered on an externally-supplied `AbortSignal` orphaned until that signal eventually fires. Each adapter now maintains a `subCleanups` registry and iterates it in `dispose()`, completing the 0.3.1 `subscribe()` unsubscribe cleanup so a disposed adapter fully releases listeners held on external signals.
+
+### Fixed (docs)
+
+- **Completed `event.source` opt-out wording in Security tables** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md), [llms.txt](llms.txt)): the 0.3.1 fix updated `STABILITY.md` and prose sections but missed the iframe Security tables and the `llms.txt` index sentence. Wording now consistently reflects that source-checking can be disabled with `expectedSource: null`.
+- **Corrected Vitest example from `environment: 'jsdom'` to `'node'`** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md)): `jsdom` was removed as a devDependency in 0.3.1; the example config now matches the actual test environment.
+- **Removed an unimplemented `BridgeDisposedError` trigger from the error table** ([README.md](README.md), [README_ZHTW.md](README_ZHTW.md)): the table claimed the iframe adapter raises it when it "detects its target window vanished" — no such detection exists; the adapter raises `BridgeDisposedError` only on explicit `dispose()`.
+- **Qualified the `AbortSignal` claim in `llms.txt`**: `ready()` and `call()` accept an `AbortSignal`; `emit()` is fire-and-forget and takes none. The previous "all async methods" wording overstated the surface.
+
+### Compatibility
+
+Non-breaking; no API change. The leak fix only affects the dispose path for subscriptions made with an external `AbortSignal`.
+
 ## [0.3.1] - 2026-05-29
 
 All five findings below originated from an independent Codex review of the

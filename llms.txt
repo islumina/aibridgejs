@@ -12,7 +12,7 @@
 
 aibridgejs solves the host-bridging problem in hybrid apps. Different runtimes speak different dialects: an iframe uses postMessage, a Flutter InAppWebView exposes named JS handlers and fires a platform-ready event, and a local dev environment needs neither. aibridgejs provides one stable API surface on top of all of them through swappable adapters.
 
-The core is pure TypeScript with zero runtime dependencies. Host-specific logic is isolated to adapters shipped as subpath exports of the same npm package. All async public methods accept AbortSignal for cancellation. Long-lived objects follow a createX() / dispose() lifecycle contract. The package is designed to be used from the application layer; it does not import from svelte, pixi.js, or any host globals in the core.
+The core is pure TypeScript with zero runtime dependencies. Host-specific logic is isolated to adapters shipped as subpath exports of the same npm package. ready() and call() accept AbortSignal for cancellation (emit() is fire-and-forget). Long-lived objects follow a createX() / dispose() lifecycle contract. The package is designed to be used from the application layer; it does not import from svelte, pixi.js, or any host globals in the core.
 
 Request/response correlation works through a string id embedded in every envelope. Concurrent call() invocations each get a unique id. Responses are matched back to their pending entry by id, then the entry is removed. Readiness gating ensures no call is attempted before the adapter signals the host is ready.
 
@@ -50,7 +50,7 @@ All payloads must be JSON-serialisable. Class instances, Date, Map, Set, and und
 
 ## Security
 
-iframe adapter: targetOrigin must be an exact HTTPS origin — wildcard * throws at construction. Every inbound message validates event.origin and event.source. Wrong-origin messages are silently discarded.
+iframe adapter: targetOrigin must be an exact HTTPS origin — wildcard * throws at construction. Every inbound message validates event.origin; event.source is validated unless disabled with expectedSource: null. Wrong-origin messages are silently discarded.
 
 Flutter adapter: set allowedOriginRules on native WebMessageListener; restrict handlers to main frame when no sub-frames are used; use InAppWebView user scripts for bridge initialisation rather than evaluateJavascript after load; never log BridgeEnvelope payloads that may contain session tokens.
 

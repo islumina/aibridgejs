@@ -100,6 +100,15 @@ describe("aibridgejs mock adapter", () => {
     expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
   });
 
+  test("dispose detaches abort listeners from externally-held signals", () => {
+    const adapter = createMockAdapter();
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    adapter.subscribe(() => {}, { signal: controller.signal });
+    adapter.dispose();
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
   test("dispose rejects subsequent post and receive becomes no-op", async () => {
     const adapter = createMockAdapter();
     const seen: BridgeEnvelope[] = [];

@@ -209,6 +209,16 @@ describe("aibridgejs flutter adapter", () => {
     expect(seen).toHaveLength(0);
   });
 
+  test("dispose detaches abort listeners from externally-held signals", () => {
+    const host = createHost({ callHandler: vi.fn() });
+    const adapter = createFlutterAdapter(host, { waitForReadyEvent: false });
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    adapter.subscribe(() => {}, { signal: controller.signal });
+    adapter.dispose();
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
   test("post, receive, and ready reject after dispose", async () => {
     const host = createHost({ callHandler: vi.fn() });
     const adapter = createFlutterAdapter(host, { waitForReadyEvent: false });

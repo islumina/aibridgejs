@@ -122,6 +122,16 @@ describe("aibridgejs iframe adapter", () => {
     expect(spy).toHaveBeenCalledWith("message", expect.any(Function));
   });
 
+  test("dispose detaches abort listeners from externally-held signals", () => {
+    const host = createHost();
+    const adapter = createIframeAdapter(host, { targetOrigin: "https://shell.example.com" });
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+    adapter.subscribe(() => {}, { signal: controller.signal });
+    adapter.dispose();
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+  });
+
   test("dispose removes message listener and clears subscribers", () => {
     const host = createHost();
     const removeSpy = vi.spyOn(host, "removeEventListener");

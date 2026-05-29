@@ -18,6 +18,7 @@ type Subscriber = (message: BridgeEnvelope, meta?: SubscribeMeta) => void;
  */
 export function createMockAdapter(): MockAdapter {
   const subscribers = new Set<Subscriber>();
+  const subCleanups = new Set<() => void>();
   let disposed = false;
 
   const dispatch = (envelope: BridgeEnvelope): void => {
@@ -46,8 +47,10 @@ export function createMockAdapter(): MockAdapter {
       const signal = options?.signal;
       const unsubscribe = (): void => {
         subscribers.delete(listener);
+        subCleanups.delete(unsubscribe);
         signal?.removeEventListener("abort", unsubscribe);
       };
+      subCleanups.add(unsubscribe);
 
       if (signal) {
         if (signal.aborted) {
@@ -67,6 +70,7 @@ export function createMockAdapter(): MockAdapter {
 
     dispose(): void {
       disposed = true;
+      for (const off of Array.from(subCleanups)) off();
       subscribers.clear();
     },
   };

@@ -232,7 +232,7 @@ Every error class extends `BridgeError`. Treat them as a discriminated union whe
 | `BridgeResetError` | A `reset()` happened while the call was in flight (or in the ready-wait that precedes it). | **Yes.** | Re-issue the call. The caller's `AbortSignal` is unaffected; a simple `for` loop with a max-retry cap is enough. |
 | `BridgeTimeoutError` | No response within `timeoutMs` (default 10 s, overridable per call). | **Yes.** | Retry with exponential backoff. If the host is genuinely down, the retry will surface as another timeout or a transport error — both are still observable. |
 | `BridgeRemoteError` | The host responded with `ok: false`. Holds the host's `code`, `message`, and optional `detail`. | **Depends on the remote contract.** | Switch on `error.code` and follow the host's documented policy. Generic retry will often re-trigger the same application error. |
-| `BridgeDisposedError` | `dispose()` was called before or during the call (or the iframe adapter detected its target window vanished). | **No.** | The bridge is gone. Construct a new `createBridge(...)` if you still need the channel. |
+| `BridgeDisposedError` | `dispose()` was called before or during the call. | **No.** | The bridge is gone. Construct a new `createBridge(...)` if you still need the channel. |
 | `BridgeError` | Catch-all base. Used if you `throw` from your own adapter or want to catch all of the above. | — | Inspect `error.name` to discriminate. |
 
 The runtime does NOT auto-retry. Wrap the call in your own retry helper when the policy is "transient errors are recoverable":
@@ -361,7 +361,7 @@ All payloads exchanged with the handler must be JSON-serialisable. The InAppWebV
 |---|---|
 | `targetOrigin` must be an exact HTTPS origin | Wildcard `*` throws at adapter construction |
 | Every inbound `event.origin` is validated | Wrong-origin messages are discarded without error |
-| Every inbound `event.source` is validated | Messages from unexpected frame references are discarded |
+| `event.source` is validated against the expected frame (unless disabled with `expectedSource: null`) | Messages from unexpected frames are discarded when source-checking is enabled |
 
 Never relax `targetOrigin` to `*` in production. A cross-origin page that can `postMessage` to your frame can forge any method call or event if origin validation is absent.
 
@@ -568,7 +568,7 @@ import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
-    environment: 'jsdom',
+    environment: 'node',
     clearMocks: true,
     restoreMocks: true,
     fakeTimers: { toFake: ['setTimeout', 'clearTimeout', 'Date'] },

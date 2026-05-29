@@ -1,6 +1,6 @@
 {
   "name": "aibridgejs",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response with AbortSignal cancellation and adapter-isolated host coupling.",
   "keywords": [
     "bridge",
