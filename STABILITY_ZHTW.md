@@ -13,6 +13,8 @@ aibridgejs 遵循 [semver](https://semver.org/)。在 **0.x** 系列內：
 
 到 **1.0** 版時，`stable` 表面在整個 1.x 系列中凍結。
 
+**自 0.4.0 起**，下列整個 `stable` 表面已納入 1.0-track 承諾：在 1.0 之前僅接受 additive 變更（新增可選 export、新增可選參數、擴增 error message），並視為在正式 1.0 凍結前即已凍結。兩項 `experimental` 設計筆記（二進位封包、streaming RPC）明確**排除**，仍可能變更——目標版本不早於 v0.7。
+
 ## Pure-web safety
 
 每個 subpath 都帶有一個 **pure-web safety** 標籤，描述在**沒有 `window.parent` shell 且沒有 `window.flutter_inappwebview` handler** 的瀏覽器分頁中 import 時的行為——即 v0.5+ 網頁遊戲情境，頁面直接載入而非嵌入 iframe 或 Flutter InAppWebView。
@@ -74,8 +76,8 @@ aibridgejs 遵循 [semver](https://semver.org/)。在 **0.x** 系列內：
 |---|---|---|
 | 0.1.x | 核心表面 + 四個適配器 | 初次發佈。 |
 | 0.2.x | 正確性 + 人體工學 | `reset()` 解決慢速就緒等待者；`Bridge.call` 泛型化；`verify:llms` 閘控。詳見 [CHANGELOG.md](./CHANGELOG.md#020---2026-05-28)。 |
-| 0.3.0 | 穩定度合約 + 純 web 安全標籤 | 本次發佈。無執行期變更。 |
-| 0.4+ | 強化 + 適配器人體工學 | TBD。 |
+| 0.3.0 | 穩定度合約 + 純 web 安全標籤 | 無執行期變更。 |
+| 0.4.0 | 依賴清理 + 1.0-track 穩定度凍結 | 本次發佈。無執行期變更；`stable` 表面納入 1.0-track 承諾（僅 additive）。已驗證零 runtime dep、devDep 家族對齊、零 audit advisory。 |
 | 1.0.0 | API 凍結 | 所有 `stable` export 在 1.x 凍結。 |
 
 ## 未來規劃（僅設計筆記）

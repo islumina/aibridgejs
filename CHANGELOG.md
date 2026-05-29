@@ -6,6 +6,40 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-05-29
+
+Dependency-hygiene milestone and 1.0-track stability freeze. **No runtime API
+addition; the production bundle is byte-identical to 0.3.2.**
+
+### Changed (stability)
+
+- **0.3.x public surface declared frozen for the 1.0 track**
+  ([STABILITY.md](STABILITY.md), [STABILITY_ZHTW.md](STABILITY_ZHTW.md)): every
+  `stable` export — core `createBridge`, the five error classes, and all four
+  adapter / detect entrypoints with their types — is now committed to
+  additive-only evolution until 1.0. The two `experimental` design-note items
+  (binary envelope, streaming RPC) are explicitly excluded and remain targeted
+  no earlier than v0.7.
+
+### Dependency hygiene (dev-only; not shipped in the npm tarball)
+
+- **Verified minimal; no reduction available.** Zero runtime `dependencies` and
+  zero `peerDependencies` (unchanged since 0.1.0). The nine devDependencies are
+  already aligned to the ai*js family-canonical versions; `depcheck` reports no
+  unused or missing dependency, `pnpm audit` reports no known vulnerability at
+  moderate or above, and `pnpm dedupe --check` finds no deduplication
+  opportunity. CI workflow actions are pinned to the current `@v6` majors
+  (`actions/checkout`, `actions/setup-node`, `pnpm/action-setup`). This
+  release records the audited-clean baseline rather than changing it.
+
+### Compatibility
+
+Non-breaking: no new exports, no removed exports, no signature changes, no
+default-behaviour change. A version-line unification (aligning aibridgejs with
+the ai*js family's 0.4.0) plus a documentation-level stability commitment.
+`dist/` bundles are byte-identical to 0.3.2; only `llms-full.txt` changes,
+reflecting the updated STABILITY.md and CHANGELOG.md it embeds.
+
 ## [0.3.2] - 2026-05-29
 
 Findings from a second independent Codex review pass.

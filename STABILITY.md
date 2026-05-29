@@ -13,6 +13,8 @@ aibridgejs follows [semver](https://semver.org/). Within the **0.x** series:
 
 At **1.0**, the `stable` surface freezes for the entire 1.x series.
 
+**As of 0.4.0**, the entire `stable` surface listed below is committed to the 1.0 track: before 1.0 it receives only additive changes (new optional exports, new optional parameters, widened error messages) and is treated as frozen ahead of the formal 1.0 freeze. The two `experimental` design-note items (binary envelope, streaming RPC) are explicitly **excluded** and remain subject to change — targeted no earlier than v0.7.
+
 ## Pure-web safety
 
 Each subpath carries a **pure-web safety** tag describing what happens when you import it in a browser tab that has **no `window.parent` shell and no `window.flutter_inappwebview` handler** — i.e. the v0.5+ web game scenario where the page is loaded directly, not embedded in iframe or Flutter InAppWebView.
@@ -74,8 +76,8 @@ Each subpath carries a **pure-web safety** tag describing what happens when you 
 |---|---|---|
 | 0.1.x | Core surface + four adapters | Initial publish. |
 | 0.2.x | Correctness + ergonomics | `reset()` settles slow-ready waiters; `Bridge.call` generic; `verify:llms` gate. See [CHANGELOG.md](./CHANGELOG.md#020---2026-05-28). |
-| 0.3.0 | Stability contract + pure-web safety labels | This release. No runtime change. |
-| 0.4+ | Hardening + adapter ergonomics | TBD. |
+| 0.3.0 | Stability contract + pure-web safety labels | No runtime change. |
+| 0.4.0 | Dependency hygiene + 1.0-track stability freeze | This release. No runtime change; `stable` surface committed to the 1.0 track (additive-only). Verified zero runtime deps, family-aligned devDeps, zero audit advisories. |
 | 1.0.0 | API freeze | All `stable` exports frozen for 1.x. |
 
 ## Future (design notes only)
