@@ -33,7 +33,7 @@ jobs:
       - name: Lint
         run: pnpm lint
 
-      - name: Test with coverage thresholds
+      - name: Test (with coverage thresholds)
         run: pnpm coverage
 
       - name: Build
@@ -44,3 +44,6 @@ jobs:
 
       - name: Check bundle sizes
         run: pnpm check:size
+
+      - name: Verify llms-full.txt is up to date
+        run: pnpm verify:llms
