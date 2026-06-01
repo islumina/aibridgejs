@@ -6,6 +6,48 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Response branch guarded against throwing getters on `error.message`/`error.code`**
+  ([src/bridge.ts](src/bridge.ts)): the error-coercion block in the `"response"` switch
+  case is now wrapped in `try/catch`. A hostile or buggy host that supplies an error
+  object with a throwing getter previously caused the exception to escape the adapter
+  callback, leaving the call promise pending indefinitely (hanging past its own
+  timeout). The guard catches any such throw and falls back to the same safe defaults
+  (`"Remote error"` / `"REMOTE_ERROR"`) already used for missing or non-string fields.
+  Well-formed error shapes are unaffected. Regression test added (`A9c` in
+  `test/bridge.test.ts`).
+
+- **iframe `expectedSource` null/fallback branches now covered by tests**
+  ([test/iframe.test.ts](test/iframe.test.ts)): three cases that were previously
+  exercised only implicitly are now tested explicitly:
+  (a) `expectedSource: null` passed directly enables origin-only acceptance;
+  (b) when no `postTarget` can be inferred, `expectedSource` defaults to `null`
+  (origin-only fallback — the security-relevant default-derivation branch);
+  (c) a message from the correct origin but a mismatched `event.source` under the
+  default parent-inferred config is rejected.
+
+### Recommended CI follow-up (not included — requires `workflows` permission)
+
+- Add a `verify:llms` step to [.github/workflows/ci.yml](.github/workflows/ci.yml)
+  (the `verify:llms` script exists and passes locally) so CI guards `llms-full.txt`
+  freshness, matching all six sibling repos.
+- Rename the test step `"Test with coverage thresholds"` → `"Test (with coverage thresholds)"`
+  to match the sibling-repo form.
+
+  These two `.github/workflows/ci.yml` edits are intentionally omitted from this
+  branch because the automation pushing it lacks the GitHub `workflows` permission;
+  a maintainer should apply them directly.
+
+### Changed (docs)
+
+- **`createIframeAdapter` JSDoc clarifies `expectedSource` contract**
+  ([src/iframe/index.ts](src/iframe/index.ts)): documents that omitting `postTarget`
+  when no target can be inferred yields `expectedSource: null` (origin-only
+  validation, source check disabled); that exact-origin allowlisting is the primary
+  security gate; and that the `event.source` check is defense-in-depth. No behavior
+  change.
+
 ## [0.4.1] - 2026-05-29
 
 Consistency patch — CI workflow and documentation hygiene. No runtime API

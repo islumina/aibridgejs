@@ -81,6 +81,98 @@ describe("aibridgejs iframe adapter", () => {
     expect(seen).toHaveLength(0);
   });
 
+  test("expectedSource: null → origin-only acceptance (source check disabled)", () => {
+    // Item 2(a): explicit expectedSource: null disables the event.source check;
+    // any source value is accepted as long as origin matches.
+    const host = createHost();
+    const adapter = createIframeAdapter(host, {
+      targetOrigin: "https://shell.example.com",
+      expectedSource: null,
+    });
+    const seen: BridgeEnvelope[] = [];
+    adapter.subscribe((envelope) => seen.push(envelope));
+
+    // Different source objects — all should pass because source check is off.
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "a", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: { id: "any-source" } },
+    );
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "b", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: null },
+    );
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "c", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: undefined },
+    );
+
+    expect(seen).toHaveLength(3);
+    expect(seen[0]?.kind).toBe("event");
+  });
+
+  test("no inferable postTarget → expectedSource defaults to null → origin-only fallback", () => {
+    // Item 2(b): when postTarget cannot be inferred (plain host with no parent
+    // and no postMessage), expectedSource defaults to null (origin-only
+    // validation). This is the security-relevant default-derivation branch.
+    const host = createHost(); // no .parent, no .postMessage
+    const adapter = createIframeAdapter(host, {
+      targetOrigin: "https://shell.example.com",
+      // No postTarget provided; host has no parent → inferPostTarget returns null
+      // → expectedSource falls back to null → source check disabled.
+    });
+    const seen: BridgeEnvelope[] = [];
+    adapter.subscribe((envelope) => seen.push(envelope));
+
+    // Any source passes because expectedSource resolved to null.
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: { id: "random-source" } },
+    );
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test2", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: null },
+    );
+
+    expect(seen).toHaveLength(2);
+  });
+
+  test("matching origin but mismatched event.source in default parent-inferred config → rejected", () => {
+    // Item 2(c): when postTarget is inferred from host.parent, expectedSource
+    // is set to that parent object. A message from the correct origin but a
+    // different source reference must be rejected.
+    const postSpy = vi.fn();
+    const parent = { postMessage: postSpy };
+    const host = createHost() as IframeHost & {
+      parent?: typeof parent;
+    };
+    host.parent = parent;
+
+    const adapter = createIframeAdapter(host, {
+      targetOrigin: "https://shell.example.com",
+      // No explicit postTarget — inferPostTarget will pick host.parent,
+      // so expectedSource === parent.
+    });
+    const seen: BridgeEnvelope[] = [];
+    adapter.subscribe((envelope) => seen.push(envelope));
+
+    // Message from the correct origin but a DIFFERENT source object.
+    const wrongSource = { postMessage: vi.fn() };
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: wrongSource },
+    );
+
+    // Must be rejected (source mismatch).
+    expect(seen).toHaveLength(0);
+
+    // Sanity: message with the correct source is accepted.
+    adapter.dispatchTestMessage(
+      { kind: "event", event: "test2", timestamp: Date.now() },
+      { origin: "https://shell.example.com", source: parent },
+    );
+    expect(seen).toHaveLength(1);
+  });
+
   test("expectedSource: undefined skips source check (sentinel parity)", () => {
     const host = createHost();
     const adapter = createIframeAdapter(host, {

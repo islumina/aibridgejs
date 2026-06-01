@@ -64,9 +64,29 @@ export function createBridge(options: BridgeOptions): Bridge {
           // sending a non-string code/message must not surface a non-string on
           // BridgeRemoteError (whose code/message are typed string). Fall back
           // to the defaults when a field is missing or the wrong type.
-          const message = typeof err?.message === "string" ? err.message : "Remote error";
-          const code = typeof err?.code === "string" ? err.code : "REMOTE_ERROR";
-          entry.reject(new BridgeRemoteError(message, code, err?.detail));
+          //
+          // Additionally, the property reads themselves are wrapped in
+          // try/catch: a hostile or buggy host may supply an object whose
+          // `message` or `code` is a throwing getter. Without this guard the
+          // throw escapes the adapter callback and the call promise hangs
+          // indefinitely (the reject path is never reached). The fallback
+          // values are identical to the type-mismatch fallbacks above.
+          let message = "Remote error";
+          let code = "REMOTE_ERROR";
+          let detail: unknown;
+          try {
+            // Read each field exactly once: with hostile getters/proxies a
+            // second access could re-run side effects or return a different
+            // (non-string) value than the typeof check observed.
+            const rawMessage: unknown = err?.message;
+            const rawCode: unknown = err?.code;
+            if (typeof rawMessage === "string") message = rawMessage;
+            if (typeof rawCode === "string") code = rawCode;
+            detail = err?.detail;
+          } catch {
+            // Getter threw — keep the safe defaults already assigned above.
+          }
+          entry.reject(new BridgeRemoteError(message, code, detail));
         }
         return;
       }

@@ -392,6 +392,45 @@ describe("aibridgejs additional correctness", () => {
     }
   });
 
+  test("A9c: remote error whose message/code getter throws does not hang the call", async () => {
+    // Regression: before the try/catch guard, a throwing getter escaped the
+    // adapter callback and the call promise hung forever past its own timeout.
+    const adapter = createMockAdapter();
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== "request") return;
+      const badError = {};
+      Object.defineProperty(badError, "message", {
+        get() {
+          throw new Error("getter exploded");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      Object.defineProperty(badError, "code", {
+        get() {
+          throw new Error("getter exploded");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      adapter.receive({
+        kind: "response",
+        id: envelope.id,
+        ok: false,
+        error: badError as never,
+        timestamp: Date.now(),
+      });
+    });
+
+    const bridge = createBridge({ adapter });
+    const err = await bridge.call("boom").catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(BridgeRemoteError);
+    const remoteErr = err as BridgeRemoteError;
+    // Must resolve promptly with the safe fallback strings, not hang.
+    expect(remoteErr.message).toBe("Remote error");
+    expect(remoteErr.code).toBe("REMOTE_ERROR");
+  });
+
   test("A9b: remote error with non-string code/message coerces to safe string defaults", async () => {
     const adapter = createMockAdapter();
     adapter.subscribe((envelope) => {
