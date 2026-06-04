@@ -1195,10 +1195,11 @@ pnpm lint
 pnpm coverage
 pnpm build
 pnpm verify:exports
+pnpm verify:llms
 pnpm check:size
 ```
 
-All six commands must pass before opening a PR. `pnpm prepublishOnly` runs
+All commands above must pass before opening a PR. `pnpm prepublishOnly` runs
 them in order as the final gate.
 
 ## Reporting bugs
