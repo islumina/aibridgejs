@@ -861,6 +861,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.2] - 2026-06-05
+
+### Docs
+
+- Review-driven documentation fix (`llms-full.txt`; plus repo-only `CONTRIBUTING.md`): clarity from a cross-package code review. No runtime or API change; `dist` byte-identical to 0.5.1.
+
 ## [0.5.1] - 2026-06-02
 
 ### Fixed
