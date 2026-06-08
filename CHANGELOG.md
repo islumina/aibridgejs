@@ -6,6 +6,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.5] - 2026-06-08
+
+### Changed
+
+- Project home migrated to the [`islumina`](https://github.com/islumina) GitHub org; the package is now published from there via npm trusted publisher (OIDC + SLSA provenance). Family-wide version alignment at `0.5.5` — no runtime or API changes.
+
 ## [0.5.2] - 2026-06-05
 
 ### Docs
