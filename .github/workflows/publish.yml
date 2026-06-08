@@ -8,7 +8,7 @@ name: Publish to npm
 # Authentication: npm Trusted Publishing via OIDC. The package's trusted
 # publisher must be configured on npmjs.com:
 #   Packages → aibridgejs → Settings → Publishing access → Trusted publisher
-#   Repository:  yshengliao/aibridgejs
+#   Repository:  islumina/aibridgejs
 #   Workflow:    publish.yml
 #
 # Manual runs also exposed via workflow_dispatch on the Actions page.

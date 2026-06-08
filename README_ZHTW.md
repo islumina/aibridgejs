@@ -1,14 +1,14 @@
 # aibridgejs
 
 [![npm version](https://img.shields.io/npm/v/aibridgejs.svg)](https://www.npmjs.com/package/aibridgejs)
-[![CI](https://github.com/yshengliao/aibridgejs/actions/workflows/ci.yml/badge.svg)](https://github.com/yshengliao/aibridgejs/actions/workflows/ci.yml)
+[![CI](https://github.com/islumina/aibridgejs/actions/workflows/ci.yml/badge.svg)](https://github.com/islumina/aibridgejs/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT-brightgreen.svg)](LICENSE)
 [![AI Generated](https://img.shields.io/badge/AI_Generated-Claude_Code_Opus_4.7_Max-blueviolet.svg)](https://www.anthropic.com/claude-code)
 [![English](https://img.shields.io/badge/lang-English-blue.svg)](README.md)
 
 > 不依賴傳輸層的橋接核心，支援 iframe、Flutter InAppWebView 與 mock runtime。採用 JSON 安全的請求/回應協定，內建 `AbortSignal` 取消機制，並透過適配器隔離宿主耦合。
 
-隸屬 [ai\*js micro-runtime 生態系](https://github.com/yshengliao) ─ 另見 [aifsmjs](https://github.com/yshengliao/aifsmjs)（FSM）與 [aiecsjs](https://github.com/yshengliao/aiecsjs)（ECS）。
+隸屬 [ai\*js micro-runtime 生態系](https://github.com/islumina) ─ 另見 [aifsmjs](https://github.com/islumina/aifsmjs)（FSM）與 [aiecsjs](https://github.com/islumina/aiecsjs)（ECS）。
 
 ---
 
