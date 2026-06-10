@@ -1,52 +1,82 @@
 name: Publish to npm
 
-# Fires on any pushed semver tag (v0.2.0, v0.2.1, etc.) — matches the trigger
-# used by aifsmjs and aiecsjs in the same ai*js family. Aligned in v0.2.1
-# after the prior `release: published` trigger required a manual
-# `gh release create` step on every publish.
+# Fires on any pushed semver tag (v0.5.6, v0.5.7, etc.). Manual runs are
+# exposed via workflow_dispatch and default to dry-run (full gate + tarball
+# audit, no actual publish).
 #
 # Authentication: npm Trusted Publishing via OIDC. The package's trusted
 # publisher must be configured on npmjs.com:
 #   Packages → aibridgejs → Settings → Publishing access → Trusted publisher
 #   Repository:  islumina/aibridgejs
 #   Workflow:    publish.yml
+# No NPM_TOKEN secret is required; the GitHub OIDC token is exchanged for
+# registry auth at publish time. `--provenance` attaches a sigstore
+# attestation that the tarball was built by this workflow on this commit.
 #
-# Manual runs also exposed via workflow_dispatch on the Actions page.
+# Releasing a new version:
+#   1. bump package.json + README status banners + CHANGELOG
+#   2. pnpm build:llms && pnpm prepublishOnly   (local gate must be green)
+#   3. git commit -m "release: vX.Y.Z ..."
+#   4. git tag vX.Y.Z && git push origin main vX.Y.Z
+# The tag push fires this workflow.
 
 on:
   push:
     tags:
-      - "v*"
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'
   workflow_dispatch:
     inputs:
       dry_run:
-        description: "Run npm publish in dry-run mode (no actual publish)"
+        description: "Run the full gate and a dry-run publish (no actual publish)"
         type: boolean
-        default: false
+        default: true
 
 jobs:
   publish:
-    name: Publish (node 22)
+    name: publish (node 22)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
+
     permissions:
+      # contents: read is required for actions/checkout.
+      # id-token: write lets npm exchange a GitHub OIDC token for registry
+      # auth via the trusted publisher relationship configured on npmjs.com.
+      # It also enables sigstore provenance attestation.
       contents: read
       id-token: write
+
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
-      - uses: pnpm/action-setup@v6
+      - uses: pnpm/action-setup@0e279bb959325dab635dd2c09392533439d90093 # v6
 
-      - uses: actions/setup-node@v6
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
         with:
           node-version: 22
-          cache: pnpm
           registry-url: "https://registry.npmjs.org"
+          cache: pnpm
 
-      - name: Upgrade npm to a version that supports trusted publishing
-        run: npm install -g npm@latest
+      - name: Upgrade npm CLI for Trusted Publishing
+        # OIDC trusted publishing requires npm >= 11.5.1. Node 22 ships with
+        # an older npm, so install a pinned version explicitly — pinned, not
+        # @latest, because this job holds an OIDC token and must not run an
+        # unvetted CLI fetched at publish time.
+        run: npm install -g npm@11.16.0
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches package.json version
+        if: github.event_name == 'push'
+        run: |
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "tag=${TAG_VERSION} pkg=${PKG_VERSION}"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "::error::tag $TAG_VERSION does not match package.json $PKG_VERSION"
+            exit 1
+          fi
 
       - name: Typecheck
         run: pnpm typecheck
@@ -54,25 +84,44 @@ jobs:
       - name: Lint
         run: pnpm lint
 
+      - name: Verify docs version banner
+        run: pnpm verify:docs
+
       - name: Test with coverage thresholds
         run: pnpm coverage
 
       - name: Build
         run: pnpm build
 
+      - name: Verify dist subpaths
+        run: pnpm verify:dist
+
       - name: Verify package exports
         run: pnpm verify:exports
 
-      - name: Verify llms-full.txt is in sync
+      - name: Verify llms-full.txt is up to date
         run: pnpm verify:llms
 
       - name: Check bundle sizes
         run: pnpm check:size
 
-      - name: Publish (dry run)
-        if: ${{ inputs.dry_run == true }}
-        run: npm publish --dry-run --provenance --access public
+      - name: Publish dry-run (audit tarball)
+        # Always runs — on tag pushes it is a final pre-flight; on manual
+        # dry-run dispatches it is the main event.
+        run: npm publish --dry-run --access public --ignore-scripts
 
-      - name: Publish to npm via OIDC Trusted Publishing
-        if: ${{ inputs.dry_run != true }}
-        run: npm publish --provenance --access public
+      - name: Publish to npm (OIDC + provenance)
+        if: github.event_name == 'push' || inputs.dry_run != true
+        # Use `npm publish` directly (not `pnpm publish`) so the npm CLI's
+        # OIDC trusted-publisher flow kicks in via the `id-token: write`
+        # permission set on this job. --ignore-scripts: no lifecycle scripts
+        # run while the OIDC token is live; the explicit steps above are the
+        # gate.
+        run: npm publish --access public --provenance --ignore-scripts
+
+      - name: Publish summary
+        if: github.event_name == 'push' || inputs.dry_run != true
+        run: |
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          echo "### Published \`aibridgejs@${PKG_VERSION}\` to npm" >> $GITHUB_STEP_SUMMARY
+          echo "View on npmjs: <https://www.npmjs.com/package/aibridgejs/v/${PKG_VERSION}>" >> $GITHUB_STEP_SUMMARY

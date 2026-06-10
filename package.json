@@ -71,14 +71,16 @@
     "test:watch": "vitest",
     "lint": "biome check src test",
     "format": "biome format --write src test",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json --noEmit",
+    "verify:docs": "node scripts/verify-docs.mjs",
+    "verify:dist": "node scripts/check-dist-subpaths.mjs",
     "verify:exports": "node scripts/verify-exports.mjs",
     "check:size": "node scripts/check-size.mjs",
     "build:llms": "node scripts/build-llms-full.mjs",
     "verify:llms": "node scripts/build-llms-full.mjs --check",
     "coverage": "vitest run --coverage",
     "example:mock": "tsx examples/01-mock/index.ts",
-    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm coverage && pnpm build && pnpm verify:exports && pnpm verify:llms && pnpm check:size"
+    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm verify:docs && pnpm coverage && pnpm build && pnpm verify:dist && pnpm verify:exports && pnpm verify:llms && pnpm check:size"
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.0",
