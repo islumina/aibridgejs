@@ -61,6 +61,38 @@ describe("isValidEnvelope", () => {
   test("rejects event envelope with non-string event", () => {
     expect(isValidEnvelope({ kind: "event", event: 42, timestamp: 1 })).toBe(false);
   });
+
+  // BRG-S-02: residual gaps — empty-string identity fields and array values.
+  test("rejects request envelope with empty-string id", () => {
+    expect(isValidEnvelope({ kind: "request", id: "", method: "m", timestamp: 1 })).toBe(false);
+  });
+
+  test("rejects request envelope with empty-string method", () => {
+    expect(isValidEnvelope({ kind: "request", id: "x", method: "", timestamp: 1 })).toBe(false);
+  });
+
+  test("rejects response envelope with empty-string id", () => {
+    // An empty-string id would otherwise probe pending.get("") — harmless today
+    // (generateId never emits "") but a needless attack surface.
+    expect(isValidEnvelope({ kind: "response", id: "", ok: true, timestamp: 1 })).toBe(false);
+  });
+
+  test("rejects event envelope with empty-string event name", () => {
+    expect(isValidEnvelope({ kind: "event", event: "", timestamp: 1 })).toBe(false);
+  });
+
+  test("rejects arrays even with a bolted-on kind/timestamp", () => {
+    // Arrays are typeof 'object' and not null, so the bare object guard let an
+    // array carrying a `kind` property slip through. An array is never a valid
+    // envelope; reject it early.
+    const reqLike: unknown[] = [];
+    Object.assign(reqLike, { kind: "request", id: "x", method: "m", timestamp: 1 });
+    expect(isValidEnvelope(reqLike)).toBe(false);
+
+    const evtLike: unknown[] = [];
+    Object.assign(evtLike, { kind: "event", event: "e", timestamp: 1 });
+    expect(isValidEnvelope(evtLike)).toBe(false);
+  });
 });
 
 describe("generateId", () => {
