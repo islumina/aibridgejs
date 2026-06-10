@@ -1,4 +1,4 @@
-import { BridgeDisposedError } from "../errors.js";
+import { BridgeDisposedError, BridgeError } from "../errors.js";
 import { isValidEnvelope } from "../internal.js";
 import type { BridgeAdapter, BridgeEnvelope, SubscribeMeta } from "../types.js";
 
@@ -84,6 +84,29 @@ export function createIframeAdapter(
 ): IframeAdapter {
   if (!options.targetOrigin || options.targetOrigin === "*") {
     throw new Error("iframe adapter requires an exact targetOrigin (wildcard '*' is forbidden)");
+  }
+
+  // Validate that targetOrigin is already a bare origin. A trailing slash, a
+  // path, or any other normalisation difference passes the wildcard/empty
+  // check above but breaks the inbound gate: outbound postMessage succeeds
+  // (the browser normalises the URL) while inbound `event.origin !==
+  // targetOrigin` never matches, so every call silently times out (fail
+  // closed, zero diagnostic). The opaque-origin literal "null" is rejected
+  // too — it would match every sandboxed / opaque-origin sender, widening the
+  // exact-origin allowlist into an any-opaque-origin allowlist (fail open).
+  // (BRG-S-03)
+  let normalisedOrigin: string;
+  try {
+    normalisedOrigin = new URL(options.targetOrigin).origin;
+  } catch {
+    throw new BridgeError(
+      `iframe adapter requires a valid absolute origin for targetOrigin (got ${JSON.stringify(options.targetOrigin)})`,
+    );
+  }
+  if (normalisedOrigin === "null" || options.targetOrigin !== normalisedOrigin) {
+    throw new BridgeError(
+      `iframe adapter requires an exact origin for targetOrigin (got ${JSON.stringify(options.targetOrigin)}, expected ${JSON.stringify(normalisedOrigin)})`,
+    );
   }
 
   const targetOrigin = options.targetOrigin;

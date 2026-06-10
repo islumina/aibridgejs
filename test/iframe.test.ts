@@ -34,6 +34,44 @@ describe("aibridgejs iframe adapter", () => {
     expect(() => createIframeAdapter(host, { targetOrigin: "" })).toThrow();
   });
 
+  test("BRG-S-03: trailing-slash targetOrigin throws at construction", () => {
+    // "https://example.com/" passes the old wildcard/empty check but never
+    // equals an inbound event.origin (browsers normalise origins without a
+    // trailing slash), so every call would silently time out (fail closed with
+    // zero diagnostic). Reject it at construction instead.
+    const host = createHost();
+    expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/" })).toThrow(
+      /origin/i,
+    );
+  });
+
+  test("BRG-S-03: targetOrigin with a path throws at construction", () => {
+    const host = createHost();
+    expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/app" })).toThrow(
+      /origin/i,
+    );
+  });
+
+  test('BRG-S-03: literal "null" targetOrigin throws at construction', () => {
+    // "null" would otherwise match every sandboxed/opaque-origin sender,
+    // turning the exact-origin allowlist into an any-opaque-origin allowlist
+    // (fail open).
+    const host = createHost();
+    expect(() => createIframeAdapter(host, { targetOrigin: "null" })).toThrow(/origin/i);
+  });
+
+  test("BRG-S-03: an exact origin (no trailing slash, no path) is accepted", () => {
+    const host = createHost();
+    expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com" })).not.toThrow();
+  });
+
+  test("BRG-S-03: an exact origin with explicit port is accepted", () => {
+    const host = createHost();
+    expect(() =>
+      createIframeAdapter(host, { targetOrigin: "https://example.com:8443" }),
+    ).not.toThrow();
+  });
+
   test("gate 6: wrong-origin inbound is discarded", () => {
     const host = createHost();
     const adapter = createIframeAdapter(host, { targetOrigin: "https://shell.example.com" });
