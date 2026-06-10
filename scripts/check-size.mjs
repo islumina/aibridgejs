@@ -9,6 +9,10 @@ import { gzipSync } from "node:zlib";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
+// Bundles ship unminified (tsup minify is off); gzip does the work, matching
+// aifsmjs. These budgets are measured against the gzipped, unminified output —
+// the bytes consumers actually transfer over the wire — so an unminified build
+// keeps debuggable stack traces in dist without inflating the shipped size.
 const budgets = {
   "dist/index.js": 3500,
   "dist/mock/index.js": 1000,
