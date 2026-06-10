@@ -6,6 +6,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.5.6] - 2026-06-10
+
+### Fixed
+
+- **Poisoned `ok:true` responses can no longer hang a call** — the response handler reads `id` / `ok` / `payload` / `error` exactly once into locals *before* mutating the pending map or running cleanup; a throwing getter now settles the call with a deterministic rejection instead of leaving it pending forever past its own timeout and AbortSignal. This completes the 0.5.1 fix, which guarded only the `ok:false` branch. `id` is read exactly once (the previous triple read was a desync vector for value-varying getters). (Review wave 2026-06-10, BRG-S-01.)
+- The Flutter adapter's eagerly-created `readyPromise` carries a no-op rejection handler, so `dispose()` before any `ready()` call no longer surfaces an `unhandledrejection`. (BRG-R-01.)
+- `isValidEnvelope` rejects empty-string `id` / `method` / `event` and array values. (BRG-S-02.)
+- `targetOrigin` is validated at construction: it must be an exact origin (`new URL(x).origin === x`); literal `"null"` and trailing-slash/path forms throw `BridgeError`. `""` and `"*"` keep their existing semantics. (BRG-S-03.)
+- `detectBridgeAdapter` feature-checks `addEventListener` / `removeEventListener` before selecting the Flutter branch instead of an `as never` cast. (BRG-B-01.)
+
+### Changed
+
+- **Code splitting enabled (`tsup splitting: true`)** — each subpath bundle previously inlined its own copy of the `BridgeError` hierarchy, so an error thrown by `aibridgejs/iframe` failed `instanceof` checks against the root export. Shared chunks restore cross-subpath class identity. `check:size` now measures each entry's transitive chunk closure with recalibrated budgets, and a cross-subpath dist smoke (`verify:dist`) guards the identity contract.
+- Supply-chain and release hardening: CI/publish actions SHA-pinned, npm CLI pinned (`11.16.0`), `permissions: contents: read` on CI, job timeouts, tag↔package.json version guard, `npm publish --ignore-scripts`, manual dispatch defaults to dry-run, new `verify:docs` banner gate, two-stage typecheck.
+
+### Docs
+
+- `timeoutMs <= 0` documented (and test-pinned) as disabling the per-call timeout; the event-listener error-swallow strategy documented with rationale; unminified-shipping rationale noted in `check-size.mjs`; README status banner added (EN + ZHTW).
+
 ## [0.5.5] - 2026-06-08
 
 ### Changed

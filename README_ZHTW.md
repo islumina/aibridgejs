@@ -10,7 +10,7 @@
 
 隸屬 [ai\*js micro-runtime 生態系](https://github.com/islumina) ─ 另見 [aifsmjs](https://github.com/islumina/aifsmjs)（FSM）與 [aiecsjs](https://github.com/islumina/aiecsjs)（ECS）。
 
-> **狀態：0.5.5。** 核心 bridge、iframe / flutter adapter、環境偵測全部上線；envelope 驗證已強化。發版歷史見 [CHANGELOG.md](CHANGELOG.md)。
+> **狀態：0.5.6。** 核心 bridge、iframe / flutter adapter、環境偵測全部上線；envelope 驗證已強化。發版歷史見 [CHANGELOG.md](CHANGELOG.md)。
 
 ---
 

@@ -10,7 +10,7 @@
 
 Part of the [ai\*js micro-runtime ecosystem](https://github.com/islumina) — see also [aifsmjs](https://github.com/islumina/aifsmjs) (FSM) and [aiecsjs](https://github.com/islumina/aiecsjs) (ECS).
 
-> **Status: 0.5.5.** Core bridge, iframe / flutter adapters, and environment detection are all live; hardened envelope validation. See [CHANGELOG.md](CHANGELOG.md) for release history.
+> **Status: 0.5.6.** Core bridge, iframe / flutter adapters, and environment detection are all live; hardened envelope validation. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
