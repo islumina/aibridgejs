@@ -103,6 +103,35 @@ describe("aibridgejs flutter adapter", () => {
     await expect(promise).rejects.toThrow(/disposed/i);
   });
 
+  test("dispose before any ready() call does not surface an unhandled rejection (eager readyPromise)", async () => {
+    // Regression for BRG-R-01: the adapter's readyPromise is created eagerly at
+    // construction. With waitForReadyEvent defaulting to true, no `.then` is
+    // attached until someone calls ready(). The documented teardown
+    // createFlutterAdapter(...) → dispose() WITHOUT a prior ready() rejected a
+    // promise that had zero handlers → unhandledRejection (fatal under Node
+    // --unhandled-rejections=strict; a suite failure under vitest). The fix
+    // attaches a no-op rejection handler (or lazily creates the promise) so the
+    // disposed-without-ready path stays silent.
+    const captured: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      captured.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const host = createHost({ callHandler: vi.fn() });
+      const adapter = createFlutterAdapter(host, { waitForReadyEvent: true });
+      // Dispose immediately — no ready()/call()/emit() ever attached a handler
+      // to the eager readyPromise.
+      adapter.dispose();
+      // Let the rejection-tracking microtask/macrotask settle so any
+      // unhandledRejection would have fired.
+      await new Promise((r) => setTimeout(r, 10));
+      expect(captured).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("ready with already-aborted signal rejects synchronously", async () => {
     const host = createHost({ callHandler: vi.fn() });
     const adapter = createFlutterAdapter(host, { waitForReadyEvent: true });

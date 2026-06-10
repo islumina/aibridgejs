@@ -53,6 +53,16 @@ export function createFlutterAdapter(
     resolveReady = resolve;
     rejectReady = reject;
   });
+  // The readyPromise is created eagerly, but with waitForReadyEvent: true no
+  // caller attaches a handler until ready() is invoked. The documented
+  // teardown path createFlutterAdapter(...) → dispose() WITHOUT a prior
+  // ready()/call()/emit() rejects this promise (BridgeDisposedError) with zero
+  // handlers, surfacing as an unhandledRejection (fatal under Node
+  // --unhandled-rejections=strict, a suite failure under vitest). Attach a
+  // no-op rejection sink so the promise is never handler-less. Real ready()
+  // callers attach their own handlers to the same promise and still observe
+  // the rejection (BRG-R-01).
+  readyPromise.catch(() => {});
 
   const onReadyEvent = (): void => {
     if (resolveReady) {
