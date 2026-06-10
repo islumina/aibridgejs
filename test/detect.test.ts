@@ -69,4 +69,28 @@ describe("detectBridgeAdapter", () => {
     const adapter = detectBridgeAdapter(host as never);
     expect(adapter.platform).toBe("flutter");
   });
+
+  test("BRG-B-01: a flutter-shaped host WITHOUT addEventListener is not selected as flutter", () => {
+    // createFlutterAdapter unconditionally calls host.addEventListener (waitFor
+    // ReadyEvent defaults to true). The old `as never` cast erased that hard
+    // requirement from the DetectHost contract, so a host that merely exposes
+    // flutter_inappwebview.callHandler but has no addEventListener would have
+    // been routed to the flutter adapter and thrown an uncaught TypeError at
+    // construction. The feature-check skips the flutter branch when the host
+    // cannot satisfy the adapter's listener requirement → falls back to mock.
+    const host = {
+      flutter_inappwebview: { callHandler: vi.fn() },
+      // No addEventListener / removeEventListener.
+    };
+    const adapter = detectBridgeAdapter(host as never);
+    expect(adapter.platform).toBe("mock");
+  });
+
+  test("BRG-B-01: a flutter host WITH addEventListener is still selected (happy path intact)", () => {
+    const host = {
+      ...fakeListener(),
+      flutter_inappwebview: { callHandler: vi.fn() },
+    };
+    expect(detectBridgeAdapter(host as never).platform).toBe("flutter");
+  });
 });
