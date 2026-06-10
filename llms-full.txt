@@ -137,9 +137,16 @@ import { createBridge } from 'aibridgejs';
 
 const bridge = createBridge({
   adapter: BridgeAdapter,   // required
-  timeoutMs?: number,       // per-call timeout in ms; default 10000
+  timeoutMs?: number,       // per-call timeout in ms; default 10000.
+                            // <= 0 disables the per-call timer entirely.
 });
 ```
+
+A non-positive `timeoutMs` (`0` or negative), passed either here or per call,
+**disables** the per-call timeout: the call stays pending until a response, an
+`AbortSignal`, `reset()`, or `dispose()` settles it. Use it only when you supply
+your own deadline (e.g. an `AbortSignal` with `setTimeout`); against a silent
+host an un-timed call pins its pending entry until teardown.
 
 Returns a `Bridge` object with the following methods.
 
@@ -176,6 +183,9 @@ Sends a `request` envelope and waits for the matched `response`. Rejects if:
 
 - The response `ok` is `false` (application-level error from the host).
 - The timeout elapses (default: `options.timeoutMs` ?? constructor `timeoutMs`).
+  A `timeoutMs` of `0` or negative disables the timer — the call will not
+  self-reject on a deadline; settle it via `AbortSignal`, `reset()`, or
+  `dispose()`.
 - The `AbortSignal` fires before a response arrives.
 - `dispose()` is called while the call is in flight.
 
