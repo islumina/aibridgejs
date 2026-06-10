@@ -14,6 +14,7 @@ import type {
   CallOptions,
   OnOptions,
   ReadyOptions,
+  ResponseEnvelope,
 } from "./types.js";
 
 interface PendingEntry {
@@ -51,26 +52,63 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     switch (envelope.kind) {
       case "response": {
-        const entry = pending.get(envelope.id);
+        // Read the id exactly once into a local and reuse it for both the
+        // lookup and the delete. The pre-0.5.6 handler read `envelope.id`
+        // twice (get + delete); a value-varying getter could delete the wrong
+        // key, leaking the real pending entry and desynchronising settlement.
+        const id = envelope.id;
+        const entry = pending.get(id);
         if (!entry) return;
-        pending.delete(envelope.id);
+
+        // Capture every field this branch needs (ok, and on success payload;
+        // on failure the error object) BEFORE mutating `pending` or calling
+        // entry.cleanup(). The envelope crosses an untrusted boundary: any of
+        // these may be a throwing getter. The 0.5.1 fix guarded only the
+        // ok:false message/code reads — but on the ok:true success path
+        // `envelope.ok` and `envelope.payload` were read AFTER cleanup() had
+        // cleared the timeout and detached the abort listener, so a throw
+        // there left the call promise hanging forever, past its own timeout
+        // and beyond any AbortSignal. Reading first means any throw becomes a
+        // deterministic reject of THIS call (BRG-S-01). `ok` and `payload` are
+        // each read exactly once into locals; `payload` is only touched on the
+        // success path so an error response's payload getter is never invoked.
+        let ok: boolean;
+        let payload: unknown;
+        let errorObject: ResponseEnvelope["error"];
+        let readThrew = false;
+        try {
+          ok = envelope.ok;
+          if (ok) {
+            payload = envelope.payload;
+          } else {
+            errorObject = envelope.error;
+          }
+        } catch {
+          // A field getter threw. We cannot trust this response; settle the
+          // call deterministically with a safe remote-error rather than hang.
+          ok = false;
+          payload = undefined;
+          errorObject = undefined;
+          readThrew = true;
+        }
+
+        pending.delete(id);
         entry.cleanup();
-        if (envelope.ok) {
-          entry.resolve(envelope.payload);
+
+        if (!readThrew && ok) {
+          entry.resolve(payload);
         } else {
-          const err = envelope.error;
           // Defensive coercion: ResponseEnvelope types code/message as strings,
-          // but the envelope crosses an untrusted boundary. A malformed host
-          // sending a non-string code/message must not surface a non-string on
-          // BridgeRemoteError (whose code/message are typed string). Fall back
-          // to the defaults when a field is missing or the wrong type.
+          // but a malformed host sending a non-string code/message must not
+          // surface a non-string on BridgeRemoteError (whose code/message are
+          // typed string). Fall back to the defaults when a field is missing,
+          // the wrong type, or unreadable (readThrew, where errorObject is the
+          // safe `undefined`).
           //
-          // Additionally, the property reads themselves are wrapped in
-          // try/catch: a hostile or buggy host may supply an object whose
-          // `message` or `code` is a throwing getter. Without this guard the
-          // throw escapes the adapter callback and the call promise hangs
-          // indefinitely (the reject path is never reached). The fallback
-          // values are identical to the type-mismatch fallbacks above.
+          // The reads below are wrapped in try/catch for the same throwing-
+          // getter reason: `errorObject.message` / `.code` / `.detail` may
+          // themselves throw. The fallback values match the type-mismatch
+          // fallbacks above.
           let message = "Remote error";
           let code = "REMOTE_ERROR";
           let detail: unknown;
@@ -78,11 +116,11 @@ export function createBridge(options: BridgeOptions): Bridge {
             // Read each field exactly once: with hostile getters/proxies a
             // second access could re-run side effects or return a different
             // (non-string) value than the typeof check observed.
-            const rawMessage: unknown = err?.message;
-            const rawCode: unknown = err?.code;
+            const rawMessage: unknown = errorObject?.message;
+            const rawCode: unknown = errorObject?.code;
             if (typeof rawMessage === "string") message = rawMessage;
             if (typeof rawCode === "string") code = rawCode;
-            detail = err?.detail;
+            detail = errorObject?.detail;
           } catch {
             // Getter threw — keep the safe defaults already assigned above.
           }
@@ -93,11 +131,22 @@ export function createBridge(options: BridgeOptions): Bridge {
       case "event": {
         const set = events.get(envelope.event);
         if (!set) return;
+        // Listener-error swallow strategy (FAM-S-07): each subscriber is invoked
+        // inside its own try/catch and any throw is intentionally discarded.
+        // Rationale: event dispatch is a fan-out with no return channel, so one
+        // misbehaving listener must not abort the loop and starve its siblings,
+        // nor escape into the adapter's inbound-message callback (which has no
+        // sensible recovery and, on some transports, would surface as an
+        // unhandled error). The bridge deliberately does NOT expose these
+        // errors: there is no onError hook in the 0.x stable surface. Consumers
+        // that need visibility must wrap their own listener body in try/catch.
+        // This also means a throwing `envelope.payload` getter degrades to "no
+        // listener sees this event" rather than a crash or hang.
         for (const listenerEntry of Array.from(set)) {
           try {
             listenerEntry.fn(envelope.payload);
           } catch {
-            // Swallow listener errors so one bad listener can't poison the rest
+            // See the strategy note above — swallow by design.
           }
         }
         return;
@@ -234,6 +283,12 @@ export function createBridge(options: BridgeOptions): Bridge {
         cleanup,
       });
 
+      // A non-positive timeout (<= 0) DISABLES the per-call timer entirely
+      // (BRG-R-02). The call then stays pending until it is settled by a
+      // response, an AbortSignal, reset(), or dispose(). This is the documented
+      // contract (see README "createBridge" / "call"): pass 0 only when you
+      // supply your own AbortSignal-based deadline, otherwise a silent host
+      // leaves the entry pinned. The default path (10 s) remains bounded.
       if (callTimeoutMs > 0) {
         timer = setTimeout(() => {
           const current = pending.get(id);

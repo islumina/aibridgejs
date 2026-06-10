@@ -6,6 +6,7 @@ import {
   BridgeTimeoutError,
   createBridge,
 } from "../src/index.js";
+import { isValidEnvelope } from "../src/internal.js";
 import { createMockAdapter } from "../src/mock/index.js";
 
 afterEach(() => {
@@ -72,6 +73,51 @@ describe("aibridgejs core gates", () => {
     const assertion = expect(pending).rejects.toBeInstanceOf(BridgeTimeoutError);
     await vi.advanceTimersByTimeAsync(1001);
     await assertion;
+  });
+
+  test("BRG-R-02: timeoutMs <= 0 disables the per-call timeout (pinned behaviour)", async () => {
+    // Documented contract (README / call() JSDoc): a non-positive timeoutMs
+    // disables the per-call timer entirely — the call stays pending until it is
+    // settled by a response, abort, reset, or dispose. This pins that behaviour
+    // so a future "clamp to a minimum" change cannot land silently.
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    let settled = false;
+    const pending = bridge
+      .call("silent", undefined, { timeoutMs: 0, signal: controller.signal })
+      .catch(() => {
+        settled = true;
+      });
+
+    // No timer was armed: advancing well past any default must NOT settle it.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+
+    // The pending entry is still live and cancellable via the supplied signal.
+    controller.abort(new Error("explicit cancel"));
+    await pending;
+    expect(settled).toBe(true);
+    bridge.dispose();
+  });
+
+  test("BRG-R-02: negative timeoutMs also disables the per-call timeout", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter, timeoutMs: -1 });
+
+    let settled = false;
+    const pending = bridge.call("silent").catch(() => {
+      settled = true;
+    });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+
+    bridge.dispose();
+    await pending;
+    expect(settled).toBe(true);
   });
 
   test("gate 4: abort rejects and clears pending entry", async () => {
@@ -429,6 +475,150 @@ describe("aibridgejs additional correctness", () => {
     // Must resolve promptly with the safe fallback strings, not hang.
     expect(remoteErr.message).toBe("Remote error");
     expect(remoteErr.code).toBe("REMOTE_ERROR");
+  });
+
+  test("A9d: poisoned ok:true response (throwing payload getter) settles the call (reject), does not hang", async () => {
+    // Regression for BRG-S-01: the 0.5.1 try/catch guards only the ok:false
+    // branch. On the success path `envelope.payload` was read AFTER
+    // entry.cleanup() had cleared the timeout and removed the abort listener.
+    // A throwing payload getter escaped the dispatch callback and the call
+    // promise hung permanently (past its own timeout and beyond any abort).
+    // The fix reads id/ok/payload once into locals inside a guarded region
+    // before mutating `pending` / calling cleanup(), so the throw becomes a
+    // deterministic reject of THIS pending call.
+    const adapter = createMockAdapter();
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== "request") return;
+      const poisoned: Record<string, unknown> = {
+        kind: "response",
+        id: envelope.id,
+        ok: true,
+        timestamp: Date.now(),
+      };
+      Object.defineProperty(poisoned, "payload", {
+        get() {
+          throw new Error("payload getter exploded");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      adapter.receive(poisoned as never);
+    });
+
+    const bridge = createBridge({ adapter, timeoutMs: 50 });
+    // If the call hangs, this await never settles and the test times out (RED).
+    const outcome = await bridge.call("boom").then(
+      () => "resolved" as const,
+      () => "rejected" as const,
+    );
+    expect(outcome).toBe("rejected");
+    bridge.dispose();
+  });
+
+  test("A9e: poisoned ok:true read failure leaves no leaked timeout or abort listener", async () => {
+    // BRG-S-01 (wiring intact after read failure): when the success-branch
+    // read throws and rejects the call, the per-call timer and the caller's
+    // abort listener must already be torn down — no orphaned setTimeout firing
+    // later, no listener left on the signal.
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== "request") return;
+      const poisoned: Record<string, unknown> = {
+        kind: "response",
+        id: envelope.id,
+        ok: true,
+        timestamp: Date.now(),
+      };
+      Object.defineProperty(poisoned, "payload", {
+        get() {
+          throw new Error("payload getter exploded");
+        },
+        enumerable: true,
+        configurable: true,
+      });
+      adapter.receive(poisoned as never);
+    });
+
+    const bridge = createBridge({ adapter, timeoutMs: 1000 });
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    let settled = 0;
+    const chain = bridge.call("boom", undefined, { signal: controller.signal }).then(
+      () => settled++,
+      () => settled++,
+    );
+    await chain;
+    // Rejected exactly once via the read-failure path.
+    expect(settled).toBe(1);
+    // The abort listener was detached by cleanup() before the reject surfaced.
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    // No stray timer fires afterwards (would otherwise attempt a second settle
+    // / touch a cleared entry). Advancing past the timeout must be inert.
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(settled).toBe(1);
+    bridge.dispose();
+  });
+
+  test("A9f: response handler reads the envelope id exactly once (no get/delete desync vector)", async () => {
+    // BRG-S-01 (id read-once): the buggy handler read `envelope.id` TWICE
+    // inside the dispatch path — once for `pending.get(envelope.id)` and again
+    // for `pending.delete(envelope.id)`. A getter returning different values
+    // across those reads could delete the wrong key (leaking the real pending
+    // entry) and misroute settlement. The fix captures the id once into a
+    // local and reuses it for both get and delete.
+    //
+    // The id getter is also touched by `isValidEnvelope`, which validates this
+    // response twice on the success path (mock dispatch validates, then the
+    // bridge subscriber re-validates). To stay robust against the validator's
+    // internal read count, we self-calibrate: measure how many id reads a
+    // single isValidEnvelope() costs for this exact shape, then assert the
+    // end-to-end count is `2 * perValidator + 1` — i.e. the handler adds
+    // exactly ONE read. The pre-fix handler added two.
+    const responseShape = (id: () => string): Record<string, unknown> => {
+      const env: Record<string, unknown> = {
+        kind: "response",
+        ok: true,
+        payload: { ok: true },
+        timestamp: Date.now(),
+      };
+      Object.defineProperty(env, "id", { get: id, enumerable: true, configurable: true });
+      return env;
+    };
+
+    // Calibrate: id reads per single validator pass on this shape.
+    let calibrationReads = 0;
+    isValidEnvelope(
+      responseShape(() => {
+        calibrationReads++;
+        return "calib-id";
+      }),
+    );
+    const perValidator = calibrationReads;
+    expect(perValidator).toBeGreaterThan(0);
+
+    const adapter = createMockAdapter();
+    let realId = "";
+    let reads = 0;
+    adapter.subscribe((envelope) => {
+      if (envelope.kind !== "request") return;
+      realId = envelope.id;
+      adapter.receive(
+        responseShape(() => {
+          reads++;
+          return realId;
+        }) as never,
+      );
+    });
+
+    const bridge = createBridge({ adapter });
+    const result = await bridge.call<{ ok: boolean }>("ping");
+    expect(result).toEqual({ ok: true });
+    // 2 validator passes (mock dispatch + bridge subscriber) + exactly 1
+    // handler read. Pre-fix the handler read it twice → 2*perValidator + 2.
+    expect(reads).toBe(2 * perValidator + 1);
+    bridge.dispose();
   });
 
   test("A9b: remote error with non-string code/message coerces to safe string defaults", async () => {
