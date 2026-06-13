@@ -1,69 +1,9 @@
 # aibridgejs
 
-> Transport-agnostic bridge core for iframe, Flutter InAppWebView, and mock runtimes. JSON-safe request/response protocol with AbortSignal cancellation and adapter-isolated host coupling. Part of the ai*js micro-runtime ecosystem. Target bundle size: <10 KB gzip.
+Transport-neutral JSON envelope bridge for iframe, Flutter, and mock adapters.
 
-## Documentation
-
-- [README](README.md): Full English documentation — API reference, adapters, security, Flutter integration guide, testing.
-- [README (繁體中文)](README_ZHTW.md): Traditional Chinese translation of the full documentation.
-- [llms-full.txt](llms-full.txt): Comprehensive LLM context — full type definitions, integration examples, TDD gate suite.
-
-## Overview
-
-aibridgejs solves the host-bridging problem in hybrid apps. Different runtimes speak different dialects: an iframe uses postMessage, a Flutter InAppWebView exposes named JS handlers and fires a platform-ready event, and a local dev environment needs neither. aibridgejs provides one stable API surface on top of all of them through swappable adapters.
-
-The core is pure TypeScript with zero runtime dependencies. Host-specific logic is isolated to adapters shipped as subpath exports of the same npm package. ready() and call() accept AbortSignal for cancellation (emit() is fire-and-forget). Long-lived objects follow a createX() / dispose() lifecycle contract. The package is designed to be used from the application layer; it does not import from svelte, pixi.js, or any host globals in the core.
-
-Request/response correlation works through a string id embedded in every envelope. Concurrent call() invocations each get a unique id. Responses are matched back to their pending entry by id, then the entry is removed. Readiness gating ensures no call is attempted before the adapter signals the host is ready.
-
-## Package Exports
-
-| Subpath | Export |
-|---|---|
-| `aibridgejs` | `createBridge`, `BridgeEnvelope` type, `BridgeAdapter` interface, error classes |
-| `aibridgejs/mock` | `createMockAdapter` — immediate-ready loopback; for dev and Vitest |
-| `aibridgejs/iframe` | `createIframeAdapter` — postMessage transport with mandatory origin validation |
-| `aibridgejs/flutter` | `createFlutterAdapter` — InAppWebView callHandler transport |
-| `aibridgejs/detect` | `detectBridgeAdapter` — auto-pick an adapter from host globals |
-
-## Core API
-
-`createBridge({ adapter, timeoutMs? })` returns a Bridge with:
-
-- `ready(options?)` — Promise<void>. Resolves when host is ready. All call() and emit() queue internally until this resolves. Accepts AbortSignal.
-- `call(method, payload?, options?)` — Promise<unknown>. Sends a request envelope; resolves with response payload. Rejects on host error, timeout, abort, or dispose. Accepts per-call timeoutMs and AbortSignal.
-- `emit(event, payload?)` — Promise<void>. Sends an event envelope toward the host. Fire-and-forget; no response tracked.
-- `on(event, listener, options?)` — () => void. Subscribes to inbound host events. Options: once, signal. Returns unsubscribe function.
-- `platform()` — string. Returns the adapter's platform identifier: 'iframe' | 'flutter' | 'mock' | 'unknown'.
-- `reset()` — void. Clears pending calls, listeners, and readiness state without disposing the adapter.
-- `dispose()` — void. Rejects all pending calls with BridgeDisposedError, removes all listeners, calls adapter.dispose().
-
-## Protocol
-
-All messages are BridgeEnvelope — a discriminated union on the kind field:
-
-- kind 'request': id (string), method (string), payload? (unknown), timestamp (number)
-- kind 'response': id (string, echoes request), ok (boolean), payload? (unknown), error? ({ code, message, detail? }), timestamp (number)
-- kind 'event': event (string), payload? (unknown), timestamp (number)
-
-All payloads must be JSON-serialisable. Class instances, Date, Map, Set, and undefined are not valid. Adapters must not add or remove fields.
-
-## Security
-
-iframe adapter: targetOrigin must be an exact HTTPS origin — wildcard * throws at construction. Every inbound message validates event.origin; event.source is validated unless disabled with expectedSource: null. Wrong-origin messages are silently discarded.
-
-Flutter adapter: set allowedOriginRules on native WebMessageListener; restrict handlers to main frame when no sub-frames are used; use InAppWebView user scripts for bridge initialisation rather than evaluateJavascript after load; never log BridgeEnvelope payloads that may contain session tokens.
-
-Core: any inbound message that does not parse as a valid BridgeEnvelope is silently discarded. The core logs nothing.
-
-## TDD Gate Cases
-
-Any correct implementation must satisfy all seven:
-
-1. Ready gating — call() and emit() queue until ready() resolves.
-2. ID correlation — concurrent call() invocations resolve independently by their response id.
-3. Timeout rejection — pending call rejects after timeoutMs; pending entry is removed.
-4. Abort rejection — AbortSignal fires mid-flight; call rejects; pending entry is removed.
-5. Malformed discard — inbound message not parseable as BridgeEnvelope is silently dropped.
-6. Origin rejection — iframe message from wrong origin or source is silently dropped.
-7. Dispose rejection — dispose() rejects all in-flight calls with BridgeDisposedError.
+- Start: README.md
+- Stability: STABILITY.md
+- Current backlog: REVIEW.md
+- Changelog: CHANGELOG.md
+- Full generated context: llms-full.txt
