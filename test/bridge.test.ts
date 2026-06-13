@@ -743,6 +743,163 @@ describe("aibridgejs additional correctness", () => {
     expect(readySpy).toHaveBeenCalled();
   });
 
+  // ---------------------------------------------------------------------------
+  // emit() per-call cancellation (REVIEW P2: "emit() cancellation").
+  // emit() gains an OPTIONAL { signal, timeoutMs } third argument so a single
+  // fire-and-forget event can be aborted or time-limited without resetting /
+  // disposing the whole bridge. Mirrors call()'s signal/timeout conventions.
+  // ---------------------------------------------------------------------------
+
+  test("E1: emit() with a signal that aborts mid-flight rejects promptly with the abort reason", async () => {
+    // adapter.post() hangs forever; the per-call signal must unstick emit().
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {});
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    const pending = bridge.emit("evt", { x: 1 }, { signal: controller.signal });
+    const reason = new Error("emit aborted mid-flight");
+    queueMicrotask(() => controller.abort(reason));
+
+    await expect(pending).rejects.toBe(reason);
+    bridge.dispose();
+  });
+
+  test("E1b: emit() abort detaches its abort listener (no orphaned pending state)", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {});
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    const pending = bridge.emit("evt", undefined, { signal: controller.signal });
+    controller.abort(new Error("cancel"));
+    await pending.catch(() => {});
+
+    // The abort listener registered for this emit must be torn down on settle.
+    expect(removeSpy).toHaveBeenCalledWith("abort", expect.any(Function));
+    bridge.dispose();
+  });
+
+  test("E2: emit() with a per-call timeoutMs rejects with BridgeTimeoutError after the timeout", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {}); // hangs
+    const bridge = createBridge({ adapter });
+
+    const pending = bridge.emit("evt", { x: 1 }, { timeoutMs: 1000 });
+    // Attach the rejection assertion before advancing timers so the rejection
+    // does not surface as an unhandled rejection during fake-timer ticks.
+    const assertion = expect(pending).rejects.toBeInstanceOf(BridgeTimeoutError);
+    await vi.advanceTimersByTimeAsync(1001);
+    await assertion;
+    bridge.dispose();
+  });
+
+  test("E2b: emit() per-call timer is cleared on a successful post (no late fire)", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    // Mock post resolves synchronously, so the timer must be cleared and never
+    // fire — advancing past the timeout must not produce a late rejection.
+    const bridge = createBridge({ adapter });
+
+    let settled: "resolved" | "rejected" | null = null;
+    const chain = bridge.emit("evt", { x: 1 }, { timeoutMs: 1000 }).then(
+      () => {
+        settled = "resolved";
+      },
+      () => {
+        settled = "rejected";
+      },
+    );
+    await chain;
+    expect(settled).toBe("resolved");
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(settled).toBe("resolved"); // unchanged — no late timer fire
+    bridge.dispose();
+  });
+
+  test("E3: emit() with no option behaves as before — no timer, awaits ready, posts once", async () => {
+    // Regression: the additive option must not change today's contract. With no
+    // option emit() arms NO timer (an indefinitely-hung post stays pending) and
+    // still gates on ready() exactly once, posting exactly once.
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    const readySpy = vi.spyOn(adapter, "ready");
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+
+    await bridge.emit("evt", { x: 1 });
+    expect(readySpy).toHaveBeenCalledTimes(1);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+
+    // No per-call timeout was requested, so nothing is armed to fire later.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(postSpy).toHaveBeenCalledTimes(1);
+    bridge.dispose();
+  });
+
+  test("E3b: emit() with timeoutMs <= 0 disables the per-call timer (mirrors call())", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {}); // hangs
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    let settled = false;
+    const pending = bridge
+      .emit("evt", undefined, { timeoutMs: 0, signal: controller.signal })
+      .catch(() => {
+        settled = true;
+      });
+
+    // Non-positive timeout arms no timer: advancing well past any default must
+    // NOT settle it.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(settled).toBe(false);
+
+    // Still cancellable via the supplied signal.
+    controller.abort(new Error("explicit cancel"));
+    await pending;
+    expect(settled).toBe(true);
+    bridge.dispose();
+  });
+
+  test("E4: emit() with an already-aborted signal rejects and never posts", async () => {
+    // Mirrors A3 for call(): a pre-aborted signal short-circuits before any
+    // adapter side effect.
+    const adapter = createMockAdapter();
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    controller.abort(new Error("pre-cancelled"));
+
+    await expect(bridge.emit("evt", undefined, { signal: controller.signal })).rejects.toThrow(
+      "pre-cancelled",
+    );
+    expect(postSpy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("E5: emit() signal abort during the readiness wait rejects without posting", async () => {
+    // The signal is threaded into ready(), so an abort while adapter.ready() is
+    // still in flight unsticks emit() before it ever reaches post().
+    const adapter = createMockAdapter();
+    adapter.ready = () => new Promise<void>(() => {}); // never readies
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+
+    const pending = bridge.emit("evt", undefined, { signal: controller.signal });
+    const reason = new Error("aborted during ready");
+    queueMicrotask(() => controller.abort(reason));
+
+    await expect(pending).rejects.toBe(reason);
+    expect(postSpy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
   test("call/emit reject and on/reset throw synchronously after dispose", async () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
