@@ -16,7 +16,7 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 
 - `call()` creates a request envelope, waits for readiness, posts through the adapter, and resolves/rejects from matching response envelopes.
 - `call()` accepts `signal` and `timeoutMs`; timeout creates `BridgeTimeoutError`, reset creates `BridgeResetError`, dispose creates `BridgeDisposedError`.
-- `emit()` is fire-and-forget but still waits for readiness and adapter `post()`.
+- `emit()` is fire-and-forget but still waits for readiness and adapter `post()`; it accepts optional per-call `signal` and `timeoutMs` (opt-in; omitted preserves the unbounded fire-and-forget contract).
 - `on()` supports `signal` and `once`; listener identity is managed by the bridge.
 - `reset()` rejects pending calls and refreshes the adapter subscription without disposing the adapter.
 - `dispose()` is idempotent and permanent.

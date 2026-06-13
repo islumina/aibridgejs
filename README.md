@@ -2,7 +2,7 @@
 
 Transport-agnostic bridge core for iframe, Flutter InAppWebView, and in-memory mock runtimes. It moves JSON-safe request/response/event envelopes across an adapter while keeping host coupling outside the core.
 
-> **Status: 0.5.6 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
+> **Status: 0.5.8 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
 
 ## Install
 
@@ -39,7 +39,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - `createBridge({ adapter, timeoutMs? })` creates a bridge around one adapter.
 - `bridge.ready({ signal }?)` waits for adapter readiness.
 - `bridge.call<T>(method, payload?, { timeoutMs, signal }?)` sends a request and resolves with the remote response payload.
-- `bridge.emit(event, payload?)` sends a fire-and-forget event after readiness.
+- `bridge.emit(event, payload?, { signal, timeoutMs }?)` sends a fire-and-forget event after readiness; the optional `signal` / `timeoutMs` cancel or time-bound a single emit.
 - `bridge.on<T>(event, listener, { signal, once }?)` subscribes to inbound events.
 - `bridge.platform()` returns `"iframe"`, `"flutter"`, `"mock"`, or `"unknown"`.
 - `bridge.reset()` rejects pending calls and resubscribes to adapter messages.
@@ -57,7 +57,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 ## Sharp Edges
 
 - Payloads must be JSON-safe. The bridge does not validate cloneability or schema; validate at app boundaries.
-- `call()` supports per-call `signal` and `timeoutMs`. `emit()` does not; it waits for readiness and adapter `post()`.
+- `call()` and `emit()` both support per-call `signal` and `timeoutMs`. For `emit()` these are opt-in: omitted, it stays fire-and-forget (waits for readiness and adapter `post()` with no time bound).
 - `timeoutMs <= 0` disables the call timer. Pair this with an `AbortSignal` if the remote side may hang.
 - `reset()` rejects all pending calls with `BridgeResetError`; listeners stay registered on the new subscription.
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.

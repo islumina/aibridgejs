@@ -2,7 +2,7 @@
 
 跨 iframe、Flutter InAppWebView、mock runtime 的 transport-agnostic bridge core。它只處理 JSON-safe request / response / event envelope，host 耦合留在 adapter。
 
-> **狀態：0.5.6 - 穩定 1.0 軌道核心。** 已發布 root、mock、iframe、flutter、detect subpaths。
+> **狀態：0.5.8 - 穩定 1.0 軌道核心。** 已發布 root、mock、iframe、flutter、detect subpaths。
 
 ## 安裝
 
