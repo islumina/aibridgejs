@@ -12,6 +12,7 @@ import type {
   BridgeOptions,
   BridgePlatform,
   CallOptions,
+  EmitOptions,
   OnOptions,
   ReadyOptions,
   ResponseEnvelope,
@@ -328,12 +329,21 @@ export function createBridge(options: BridgeOptions): Bridge {
     });
   }
 
-  async function emit(event: string, payload?: unknown): Promise<void> {
+  async function emit(event: string, payload?: unknown, opts?: EmitOptions): Promise<void> {
     throwIfDisposed();
+    const signal = opts?.signal;
+    if (signal?.aborted) {
+      throw signal.reason;
+    }
+
     const capturedEpoch = resetEpoch;
-    await ready();
+    // Thread the signal through readiness so a hung adapter.ready() can be
+    // unstuck by this single emit's abort, not only by reset()/dispose().
+    await (signal !== undefined ? ready({ signal }) : ready());
+
     if (disposed) throw new BridgeDisposedError();
     if (resetEpoch !== capturedEpoch) throw new BridgeResetError();
+    if (signal?.aborted) throw signal.reason;
 
     const envelope: BridgeEnvelope = {
       kind: "event",
@@ -342,7 +352,71 @@ export function createBridge(options: BridgeOptions): Bridge {
       timestamp: now(),
     };
 
-    await adapter.post(envelope);
+    // emit() registers no pending-map entry (it is fire-and-forget, with no
+    // response to correlate). The only thing still in flight after readiness is
+    // adapter.post(), which on some transports (e.g. a Flutter callHandler that
+    // never settles) can hang. We therefore race post() against an OPTIONAL
+    // per-call timeout and the caller's abort signal, mirroring call()'s
+    // cancellation semantics. Both the timer and the abort listener are torn
+    // down on EVERY settle path so a successful (or already-rejected) emit
+    // leaves no orphaned timer firing later and no listener pinned on the
+    // signal — the same teardown discipline call()'s cleanup() enforces.
+    const emitTimeoutMs = opts?.timeoutMs;
+
+    // Fast path: no per-call timeout and no signal → behave exactly as the
+    // pre-cancellation emit did (a bare awaited post()). Keeps the additive
+    // change a strict superset and avoids wrapping cost on the common call.
+    if ((emitTimeoutMs === undefined || emitTimeoutMs <= 0) && signal === undefined) {
+      await adapter.post(envelope);
+      return;
+    }
+
+    await new Promise<void>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let abortHandler: (() => void) | undefined;
+      let settled = false;
+
+      const cleanup = (): void => {
+        if (timer !== undefined) {
+          clearTimeout(timer);
+          timer = undefined;
+        }
+        if (signal && abortHandler) {
+          signal.removeEventListener("abort", abortHandler);
+          abortHandler = undefined;
+        }
+      };
+
+      const settleResolve = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      };
+      const settleReject = (reason: unknown): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        reject(reason);
+      };
+
+      // A non-positive timeout (<= 0) DISABLES the timer, mirroring call()'s
+      // BRG-R-02 contract; only a positive value arms it.
+      if (emitTimeoutMs !== undefined && emitTimeoutMs > 0) {
+        timer = setTimeout(() => {
+          settleReject(new BridgeTimeoutError(`Emit timeout: ${event}`));
+        }, emitTimeoutMs);
+      }
+
+      if (signal) {
+        abortHandler = (): void => {
+          settleReject(signal.reason);
+        };
+        signal.addEventListener("abort", abortHandler, { once: true });
+      }
+
+      adapter.post(envelope).then(settleResolve, settleReject);
+    });
   }
 
   function on<T = unknown>(

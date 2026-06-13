@@ -14,6 +14,7 @@ export type {
   BridgeOptions,
   BridgePlatform,
   CallOptions,
+  EmitOptions,
   EventEnvelope,
   OnOptions,
   ReadyOptions,
