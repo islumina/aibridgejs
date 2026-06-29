@@ -2,7 +2,7 @@
 
 Transport-agnostic bridge core for iframe, Flutter InAppWebView, and in-memory mock runtimes. It moves JSON-safe request/response/event envelopes across an adapter while keeping host coupling outside the core.
 
-> **Status: 0.5.8 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
+> **Status: 0.5.9 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
 
 ## Install
 
