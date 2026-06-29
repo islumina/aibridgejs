@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 // dist-subpath smoke test (T8, ai*js wave 2026-06-10).
 //
-// tsup ships every subpath as its own ESM + CJS bundle (splitting:false), so a
-// cross-subpath bug — e.g. duplicated module state across bundles — would let
-// `BridgeError` thrown from `./iframe` fail `instanceof` the root-exported
-// `BridgeError`, or break adapter ⇄ bridge interop. This verifies, for BOTH
-// module systems:
+// tsup builds every subpath as its own ESM + CJS bundle with code-splitting on
+// (splitting:true), so shared modules — notably `errors.js` — are hoisted into
+// a common chunk the subpath bundles import rather than inlining a private copy.
+// The cross-subpath `instanceof` assertions (5a/5b below) exist precisely
+// BECAUSE splitting could otherwise duplicate the `errors.js` chunk across
+// subpath bundles: a `BridgeError` thrown from `./iframe` would then carry its
+// own copy of the class and fail `instanceof` the root-exported `BridgeError`,
+// breaking adapter ⇄ bridge interop. This verifies, for BOTH module systems:
 //   1. Every declared subpath loads.
 //   2. Root `createBridge` interoperates with the `./mock`, `./iframe`,
 //      `./flutter`, and `./detect` adapters (platform wiring + a real mock

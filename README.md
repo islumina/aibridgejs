@@ -62,6 +62,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - `reset()` rejects all pending calls with `BridgeResetError`; listeners stay registered on the new subscription.
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
+- Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 
 ## AI Context
 
