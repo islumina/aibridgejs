@@ -4,6 +4,10 @@ All notable changes to aibridgejs are summarized here. Older release detail was 
 
 ## [Unreleased]
 
+## [0.5.9] - 2026-06-29
+
+- Docs: corrected the stale `emit()` cancellation backlog row (per-call `signal` / `timeoutMs` shipped in 0.5.8) and documented that event-listener throws are isolated/discarded by design; refreshed a stale build-script comment.
+
 ## [0.5.8] - 2026-06-14
 
 - Added: `emit(event, payload?, options?)` accepts an optional `EmitOptions { signal?, timeoutMs? }` for per-call cancellation and timeout, mirroring `call()`. Opt-in and fully backwards-compatible — omitting the options preserves the prior fire-and-forget behaviour. A positive `timeoutMs` rejects with `BridgeTimeoutError`; a `signal` abort rejects with its reason; `timeoutMs <= 0` disables the timer.

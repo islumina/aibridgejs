@@ -2,7 +2,7 @@
 
 Transport-agnostic bridge core for iframe, Flutter InAppWebView, and in-memory mock runtimes. It moves JSON-safe request/response/event envelopes across an adapter while keeping host coupling outside the core.
 
-> **Status: 0.5.8 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
+> **Status: 0.5.9 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
 
 ## Install
 
@@ -62,6 +62,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - `reset()` rejects all pending calls with `BridgeResetError`; listeners stay registered on the new subscription.
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
+- Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 
 ## AI Context
 

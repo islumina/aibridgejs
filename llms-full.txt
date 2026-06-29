@@ -14,7 +14,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Transport-agnostic bridge core for iframe, Flutter InAppWebView, and in-memory mock runtimes. It moves JSON-safe request/response/event envelopes across an adapter while keeping host coupling outside the core.
 
-> **Status: 0.5.8 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
+> **Status: 0.5.9 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
 
 ## Install
 
@@ -74,6 +74,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - `reset()` rejects all pending calls with `BridgeResetError`; listeners stay registered on the new subscription.
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
+- Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 
 ## AI Context
 
@@ -111,6 +112,7 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 - `call()` accepts `signal` and `timeoutMs`; timeout creates `BridgeTimeoutError`, reset creates `BridgeResetError`, dispose creates `BridgeDisposedError`.
 - `emit()` is fire-and-forget but still waits for readiness and adapter `post()`; it accepts optional per-call `signal` and `timeoutMs` (opt-in; omitted preserves the unbounded fire-and-forget contract).
 - `on()` supports `signal` and `once`; listener identity is managed by the bridge.
+- Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 - `reset()` rejects pending calls and refreshes the adapter subscription without disposing the adapter.
 - `dispose()` is idempotent and permanent.
 
@@ -130,6 +132,10 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 All notable changes to aibridgejs are summarized here. Older release detail was condensed after the 2026-06-10 review wave.
 
 ## [Unreleased]
+
+## [0.5.9] - 2026-06-29
+
+- Docs: corrected the stale `emit()` cancellation backlog row (per-call `signal` / `timeoutMs` shipped in 0.5.8) and documented that event-listener throws are isolated/discarded by design; refreshed a stale build-script comment.
 
 ## [0.5.8] - 2026-06-14
 
