@@ -73,7 +73,17 @@ export function createFlutterAdapter(
     }
   };
 
-  if (waitForReady) {
+  // Feature-check readiness: the platform-ready event is one-shot, so an
+  // adapter created after it fired (lazy bundle, SPA route) would otherwise
+  // wait forever. flutter_inappwebview's Android / Windows builds set
+  // `flutter_inappwebview._platformReady = true` when they dispatch the event;
+  // iOS / macOS expose no such flag, so there pass `waitForReadyEvent: false`
+  // when the platform is known to be ready already.
+  const platformReady =
+    (host.flutter_inappwebview as { _platformReady?: unknown } | undefined)?._platformReady ===
+    true;
+
+  if (waitForReady && !platformReady) {
     host.addEventListener(readyEventName, onReadyEvent, { once: true });
   } else {
     onReadyEvent();

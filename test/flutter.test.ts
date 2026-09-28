@@ -1,9 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
+import { detectBridgeAdapter } from "../src/detect/index.js";
 import {
   type FlutterHost,
   type FlutterInAppWebView,
   createFlutterAdapter,
 } from "../src/flutter/index.js";
+import { createBridge } from "../src/index.js";
 import type { BridgeEnvelope } from "../src/types.js";
 
 function createHost(flutter?: FlutterInAppWebView): FlutterHost & { fire: (name: string) => void } {
@@ -303,5 +305,51 @@ describe("aibridgejs flutter adapter", () => {
     const host = createHost({ callHandler: vi.fn() });
     const adapter = createFlutterAdapter(host, { waitForReadyEvent: false });
     expect(adapter.platform).toBe("flutter");
+  });
+
+  // flutter_inappwebview's Android / Windows PLATFORM_READY_JS_SOURCE dispatches
+  // the one-shot event AND sets `window.flutter_inappwebview._platformReady =
+  // true`. Model that host so an adapter created after the event can be tested.
+  function fireAndroidPlatformReady(host: FlutterHost & { fire: (name: string) => void }): void {
+    host.fire("flutterInAppWebViewPlatformReady");
+    (
+      host.flutter_inappwebview as FlutterInAppWebView & { _platformReady?: boolean }
+    )._platformReady = true;
+  }
+
+  test("adapter created AFTER the platform-ready event feature-checks _platformReady and is ready", async () => {
+    const host = createHost({ callHandler: vi.fn() });
+    fireAndroidPlatformReady(host);
+
+    const adapter = createFlutterAdapter(host);
+    let resolved = false;
+    const promise = adapter.ready().then(() => {
+      resolved = true;
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(resolved).toBe(true);
+    await promise;
+    adapter.dispose();
+  });
+
+  test("bridge over a lazily detected flutter adapter round-trips call() after the event (and after reset())", async () => {
+    const host = createHost({
+      callHandler: async (_name: string, env: unknown) => ({
+        kind: "response",
+        id: (env as { id: string }).id,
+        ok: true,
+        payload: "pong",
+        timestamp: Date.now(),
+      }),
+    });
+    fireAndroidPlatformReady(host);
+
+    const adapter = detectBridgeAdapter(host);
+    expect(adapter.platform).toBe("flutter");
+    const bridge = createBridge({ adapter, timeoutMs: 100 });
+    await expect(bridge.call("ping")).resolves.toBe("pong");
+    bridge.reset();
+    await expect(bridge.call("ping")).resolves.toBe("pong");
+    bridge.dispose();
   });
 });
