@@ -1269,4 +1269,78 @@ describe("aibridgejs additional correctness", () => {
     adapter.post = original;
     bridge.dispose();
   });
+
+  test("call(): a synchronously throwing adapter.post() rejects and cleans up (no leaked abort listener)", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter, timeoutMs: 0 });
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    await expect(bridge.call("x", undefined, { signal: ctrl.signal })).rejects.toThrow(
+      "sync post failure",
+    );
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    bridge.dispose();
+  });
+
+  test("call(): default timeout does not leak a timer when adapter.post() throws synchronously", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter });
+
+    await expect(bridge.call("x")).rejects.toThrow("sync post failure");
+    expect(vi.getTimerCount()).toBe(0);
+    bridge.dispose();
+  });
+
+  test("call(): adapter.post() returning a non-promise does not synchronously throw a TypeError", async () => {
+    let sent: unknown;
+    const adapter = createMockAdapter();
+    adapter.post = ((message: unknown) => {
+      sent = message;
+      return undefined as unknown as Promise<void>;
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter, timeoutMs: 0 });
+
+    let err: unknown = "not-settled";
+    const ctrl = new AbortController();
+    const pending = bridge.call("x", undefined, { signal: ctrl.signal }).catch((e: unknown) => {
+      err = e;
+    });
+    // Let readiness settle and the safePost() microtask chain run, without
+    // settling via a real response.
+    await new Promise((r) => setTimeout(r, 0));
+    expect((sent as { kind?: string } | undefined)?.kind).toBe("request");
+    // The call is still pending (post() "succeeded", just sent nothing back),
+    // not synchronously rejected with a TypeError from calling `.catch` on
+    // a non-promise.
+    expect(err).toBe("not-settled");
+    ctrl.abort(new Error("cleanup"));
+    await pending;
+    bridge.dispose();
+  });
+
+  test("emit() slow path: a synchronously throwing adapter.post() rejects and detaches the abort listener", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter });
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    await expect(bridge.emit("e", undefined, { signal: ctrl.signal })).rejects.toThrow(
+      "sync post failure",
+    );
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    bridge.dispose();
+  });
 });

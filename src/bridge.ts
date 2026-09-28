@@ -7,6 +7,7 @@ import {
 import { generateId, isValidEnvelope, now } from "./internal.js";
 import type {
   Bridge,
+  BridgeAdapter,
   BridgeEnvelope,
   BridgeListener,
   BridgeOptions,
@@ -17,6 +18,22 @@ import type {
   ReadyOptions,
   ResponseEnvelope,
 } from "./types.js";
+
+// BridgeAdapter.post() is typed to return a Promise, but a type-valid custom
+// adapter can still throw synchronously (before returning) or return a
+// non-thenable. Either escapes a bare `adapter.post(envelope).catch(...)` /
+// `.then(...)` call: a synchronous throw skips every settle path registered
+// around the call (the pending entry, its timer, its abort listener), and a
+// non-promise return makes `.catch`/`.then` itself throw a TypeError. Route
+// every adapter.post() call through this wrapper so both cases become an
+// ordinary rejection on the returned promise instead (aibridgejs-6).
+function safePost(adapter: BridgeAdapter, envelope: BridgeEnvelope): Promise<void> {
+  try {
+    return Promise.resolve(adapter.post(envelope));
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
 
 interface PendingEntry {
   resolve: (value: unknown) => void;
@@ -360,7 +377,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         timestamp: now(),
       };
 
-      adapter.post(envelope).catch((err: unknown) => {
+      safePost(adapter, envelope).catch((err: unknown) => {
         const current = pending.get(id);
         if (!current) return;
         pending.delete(id);
@@ -480,7 +497,7 @@ export function createBridge(options: BridgeOptions): Bridge {
       };
       signal.addEventListener("abort", abortHandler, { once: true });
 
-      adapter.post(envelope).then(settleResolve, settleReject);
+      safePost(adapter, envelope).then(settleResolve, settleReject);
     });
   }
 
