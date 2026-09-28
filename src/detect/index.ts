@@ -50,6 +50,21 @@ export function detectBridgeAdapter(host: DetectHost, options: DetectOptions = {
   }
 
   if (host?.parent && host.parent !== host) {
+    // Feature-check, mirroring the Flutter branch above (BRG-B-01):
+    // createIframeAdapter registers/unregisters a "message" listener via
+    // host.addEventListener/removeEventListener unconditionally.
+    // DetectHost marks these optional (a pure-web / SSR-shim host may lack
+    // them), so a host with a distinct `parent` but no callable listener
+    // methods would otherwise raise a raw TypeError inside
+    // createIframeAdapter instead of a descriptive error (aibridgejs-13).
+    if (
+      typeof host.addEventListener !== "function" ||
+      typeof host.removeEventListener !== "function"
+    ) {
+      throw new Error(
+        "detectBridgeAdapter: iframe host detected but addEventListener/removeEventListener are not both callable",
+      );
+    }
     if (!options.iframe || !options.iframe.targetOrigin) {
       throw new Error(
         "detectBridgeAdapter: iframe host detected but options.iframe.targetOrigin is missing",
