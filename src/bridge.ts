@@ -31,9 +31,29 @@ interface ListenerEntry {
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+// setTimeout stores its delay as a signed 32-bit int: anything larger
+// (including Infinity) overflows and fires after ~1 ms (Node clamps with a
+// TimeoutOverflowWarning; browsers treat it as 0) — the opposite of a long
+// deadline.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+// A missing or NaN timeout (e.g. `Number(badEnvValue)`) takes the fallback. NaN
+// fails both `> 0` and `<= 0`, so it would otherwise silently disable the timer.
+function timeoutOr(timeoutMs: number | undefined, fallback: number): number {
+  return timeoutMs === undefined || Number.isNaN(timeoutMs) ? fallback : timeoutMs;
+}
+
+// The delay to arm for a timeout, or undefined for "no timer": non-positive
+// (<= 0, BRG-R-02) and Infinity disable it; finite values above the 32-bit
+// limit are clamped to it rather than overflowing.
+function timerDelay(timeoutMs: number): number | undefined {
+  if (!(timeoutMs > 0) || timeoutMs === Number.POSITIVE_INFINITY) return undefined;
+  return Math.min(timeoutMs, MAX_TIMER_DELAY_MS);
+}
+
 export function createBridge(options: BridgeOptions): Bridge {
   const adapter = options.adapter;
-  const defaultTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const defaultTimeoutMs = timeoutOr(options.timeoutMs, DEFAULT_TIMEOUT_MS);
 
   const pending = new Map<string, PendingEntry>();
   const events = new Map<string, Set<ListenerEntry>>();
@@ -254,7 +274,7 @@ export function createBridge(options: BridgeOptions): Bridge {
     if (signal?.aborted) throw signal.reason;
 
     const id = generateId();
-    const callTimeoutMs = opts?.timeoutMs ?? defaultTimeoutMs;
+    const callDelayMs = timerDelay(timeoutOr(opts?.timeoutMs, defaultTimeoutMs));
 
     return new Promise<T>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -290,14 +310,15 @@ export function createBridge(options: BridgeOptions): Bridge {
       // contract (see README "createBridge" / "call"): pass 0 only when you
       // supply your own AbortSignal-based deadline, otherwise a silent host
       // leaves the entry pinned. The default path (10 s) remains bounded.
-      if (callTimeoutMs > 0) {
+      // Infinity likewise arms no timer; see timerDelay().
+      if (callDelayMs !== undefined) {
         timer = setTimeout(() => {
           const current = pending.get(id);
           if (!current) return;
           pending.delete(id);
           current.cleanup();
           reject(new BridgeTimeoutError(`Call timeout: ${method}`));
-        }, callTimeoutMs);
+        }, callDelayMs);
       }
 
       if (signal) {
@@ -341,16 +362,17 @@ export function createBridge(options: BridgeOptions): Bridge {
     // internal abort signal (merged with the caller's, if any) so readiness and
     // post() both race one signal. A non-positive timeout (<= 0) DISABLES the
     // timer, mirroring call()'s BRG-R-02 contract; only a positive value arms
-    // it. `disarm` clears the timer and detaches the forwarding listener on
-    // EVERY settle path (the finally below), so nothing fires late.
-    const emitTimeoutMs = opts?.timeoutMs;
+    // it (Infinity / NaN arm none either; see timerDelay()). `disarm` clears
+    // the timer and detaches the forwarding listener on EVERY settle path (the
+    // finally below), so nothing fires late.
+    const emitDelayMs = opts?.timeoutMs === undefined ? undefined : timerDelay(opts.timeoutMs);
     let signal = userSignal;
     let disarm: (() => void) | undefined;
-    if (emitTimeoutMs !== undefined && emitTimeoutMs > 0) {
+    if (emitDelayMs !== undefined) {
       const deadline = new AbortController();
       const timer = setTimeout(() => {
         deadline.abort(new BridgeTimeoutError(`Emit timeout: ${event}`));
-      }, emitTimeoutMs);
+      }, emitDelayMs);
       const forwardAbort = (): void => {
         deadline.abort(userSignal!.reason);
       };

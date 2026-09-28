@@ -120,6 +120,101 @@ describe("aibridgejs core gates", () => {
     expect(settled).toBe(true);
   });
 
+  // timeoutMs range normalisation. setTimeout stores its delay as a signed
+  // 32-bit int, so Infinity or anything above 2**31-1 used to overflow and fire
+  // after ~1 ms (Node TimeoutOverflowWarning; browsers treat it as 0), and NaN
+  // failed both `> 0` and `<= 0`, silently disabling the default timer.
+  // Real timers here: the overflow is a host-timer behaviour fake timers do not
+  // reproduce faithfully.
+  const settleState = (p: Promise<unknown>): { value: unknown; done: Promise<void> } => {
+    const state: { value: unknown; done: Promise<void> } = {
+      value: null,
+      done: Promise.resolve(),
+    };
+    state.done = p.then(
+      () => {
+        state.value = "resolved";
+      },
+      (err: unknown) => {
+        state.value = err;
+      },
+    );
+    return state;
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test("T1: call() timeoutMs: Infinity arms no timer instead of firing after ~1 ms", async () => {
+    const bridge = createBridge({ adapter: createMockAdapter() });
+    const state = settleState(bridge.call("x", undefined, { timeoutMs: Number.POSITIVE_INFINITY }));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+    expect(state.value).toBeInstanceOf(BridgeDisposedError);
+  });
+
+  test("T2: call() timeoutMs above 2**31-1 is clamped instead of overflowing to ~1 ms", async () => {
+    const bridge = createBridge({ adapter: createMockAdapter() });
+    const state = settleState(bridge.call("x", undefined, { timeoutMs: 2 ** 31 }));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+    expect(state.value).toBeInstanceOf(BridgeDisposedError);
+  });
+
+  test("T3: createBridge({ timeoutMs: Infinity }) does not fail every call immediately", async () => {
+    const bridge = createBridge({
+      adapter: createMockAdapter(),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
+    const state = settleState(bridge.call("x"));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+  });
+
+  test("T4: emit() timeoutMs: Infinity does not reject before post() settles", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {}); // hangs
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    const state = settleState(
+      bridge.emit("e", undefined, {
+        timeoutMs: Number.POSITIVE_INFINITY,
+        signal: controller.signal,
+      }),
+    );
+    await wait(50);
+    expect(state.value).toBeNull();
+    const reason = new Error("cancel");
+    controller.abort(reason);
+    await state.done;
+    expect(state.value).toBe(reason);
+    bridge.dispose();
+  });
+
+  test("T5: a NaN timeoutMs falls back to the default instead of disabling the timer", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter, timeoutMs: Number("abc") });
+    const fromDefault = settleState(bridge.call("x"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await fromDefault.done;
+    expect(fromDefault.value).toBeInstanceOf(BridgeTimeoutError);
+
+    const bridge2 = createBridge({ adapter: createMockAdapter(), timeoutMs: 1000 });
+    const perCall = settleState(bridge2.call("y", undefined, { timeoutMs: Number.NaN }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await perCall.done;
+    expect(perCall.value).toBeInstanceOf(BridgeTimeoutError);
+    bridge.dispose();
+    bridge2.dispose();
+  });
+
   test("gate 4: abort rejects and clears pending entry", async () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
