@@ -178,7 +178,25 @@ export function createBridge(options: BridgeOptions): Bridge {
         return;
       }
       case "event": {
-        const set = events.get(envelope.event);
+        // Read `event` and `payload` exactly once, up front, inside a guard.
+        // Both may be getters on an in-process envelope (mock/flutter
+        // `receive()`, a custom adapter): isValidEnvelope already read
+        // `event` once to validate it, so this is a second access, and a
+        // value-varying or throwing getter must not (a) throw out of the
+        // adapter's dispatch loop and starve every later subscriber it was
+        // iterating, or (b) hand different listeners in the fan-out below
+        // different payload values (aibridgejs-11).
+        let eventName: unknown;
+        let eventPayload: unknown;
+        try {
+          eventName = envelope.event;
+          eventPayload = envelope.payload;
+        } catch {
+          return;
+        }
+        if (typeof eventName !== "string") return;
+
+        const set = events.get(eventName);
         if (!set) return;
         // Listener-error swallow strategy (FAM-S-07): each subscriber is invoked
         // inside its own try/catch and any throw is intentionally discarded.
@@ -189,8 +207,6 @@ export function createBridge(options: BridgeOptions): Bridge {
         // unhandled error). The bridge deliberately does NOT expose these
         // errors: there is no onError hook in the 0.x stable surface. Consumers
         // that need visibility must wrap their own listener body in try/catch.
-        // This also means a throwing `envelope.payload` getter degrades to "no
-        // listener sees this event" rather than a crash or hang.
         // BRG-R-05: stop the fan-out the instant dispose() runs (a listener
         // that calls bridge.dispose() must not let later siblings, including
         // `once` listeners, run after teardown), and skip any entry whose
@@ -202,7 +218,7 @@ export function createBridge(options: BridgeOptions): Bridge {
           if (disposed) break;
           if (listenerEntry.removed) continue;
           try {
-            listenerEntry.fn(envelope.payload);
+            listenerEntry.fn(eventPayload);
           } catch {
             // See the strategy note above — swallow by design.
           }

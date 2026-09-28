@@ -81,6 +81,50 @@ describe("isValidEnvelope", () => {
     expect(isValidEnvelope({ kind: "event", event: "", timestamp: 1 })).toBe(false);
   });
 
+  test("does not throw when a field getter throws (request id)", () => {
+    const envelope = {
+      kind: "request",
+      timestamp: 1,
+      method: "m",
+      get id(): string {
+        throw new Error("getter boom");
+      },
+    };
+    expect(() => isValidEnvelope(envelope)).not.toThrow();
+    expect(isValidEnvelope(envelope)).toBe(false);
+  });
+
+  test("does not throw when a field getter throws (event name)", () => {
+    const envelope = {
+      kind: "event",
+      timestamp: 1,
+      get event(): string {
+        throw new Error("getter boom");
+      },
+    };
+    expect(() => isValidEnvelope(envelope)).not.toThrow();
+    expect(isValidEnvelope(envelope)).toBe(false);
+  });
+
+  test("reads each identity field only once, so a value-varying getter can't pass typeof with one value and length with another", () => {
+    let reads = 0;
+    const envelope = {
+      kind: "request",
+      timestamp: 1,
+      method: "m",
+      get id(): string {
+        reads++;
+        // First read: a non-empty string (would pass `typeof === "string"`).
+        // A second read of the same getter returns "" (would fail
+        // `.length > 0`). Reading once means the SAME value backs both
+        // checks, so the result stays consistent with that one value.
+        return reads === 1 ? "x" : "";
+      },
+    };
+    expect(isValidEnvelope(envelope)).toBe(true);
+    expect(reads).toBe(1);
+  });
+
   test("rejects arrays even with a bolted-on kind/timestamp", () => {
     // Arrays are typeof 'object' and not null, so the bare object guard let an
     // array carrying a `kind` property slip through. An array is never a valid

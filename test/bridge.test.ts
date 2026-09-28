@@ -1343,4 +1343,56 @@ describe("aibridgejs additional correctness", () => {
     expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
     bridge.dispose();
   });
+
+  test("event dispatch: an `event` getter that throws on a later read does not escape the dispatch loop", () => {
+    // `event` is validated twice before the bridge's own event-case runs
+    // (once by the mock adapter's dispatch, once by the bridge's inbound
+    // subscriber). Return a valid value for those two reads and only throw
+    // on a further read, so this exercises the bridge's own guard around
+    // `envelope.event` rather than just isValidEnvelope's.
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spy = vi.fn();
+    bridge.on("e", spy);
+
+    let reads = 0;
+    const envelope = {
+      kind: "event",
+      timestamp: Date.now(),
+      get event(): string {
+        reads++;
+        if (reads <= 2) return "e";
+        throw new Error("getter boom");
+      },
+    };
+
+    expect(() => adapter.receive(envelope as never)).not.toThrow();
+    expect(spy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("event dispatch: reads `payload` once, so every listener in the fan-out sees the same value", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const seen: unknown[] = [];
+    bridge.on("e", (p) => seen.push(p));
+    bridge.on("e", (p) => seen.push(p));
+    bridge.on("e", (p) => seen.push(p));
+
+    let reads = 0;
+    const envelope = {
+      kind: "event",
+      event: "e",
+      timestamp: Date.now(),
+      get payload(): number {
+        reads++;
+        return reads;
+      },
+    };
+
+    adapter.receive(envelope as never);
+    expect(seen).toEqual([1, 1, 1]);
+    expect(reads).toBe(1);
+    bridge.dispose();
+  });
 });
