@@ -525,6 +525,7 @@ describe("aibridgejs additional correctness", () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
     const spyB = vi.fn();
+    // biome-ignore lint/style/useConst: hoisted so the listener closure can reference it before assignment
     let off: (() => void) | undefined;
     bridge.on("e", () => off?.());
     off = bridge.on("e", spyB);
