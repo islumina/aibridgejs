@@ -12,15 +12,24 @@ const pkg = JSON.parse(await readFile(resolve(root, "package.json"), "utf8"));
 
 const failures = [];
 
-for (const [subpath, conditions] of Object.entries(pkg.exports)) {
-  for (const [condition, relPath] of Object.entries(conditions)) {
-    const abs = resolve(root, relPath);
+// Conditions may nest (e.g. import/require each carrying their own types +
+// default), so walk down to every string target.
+async function check(label, target) {
+  if (typeof target === "string") {
     try {
-      await access(abs);
+      await access(resolve(root, target));
     } catch {
-      failures.push(`${subpath} -> ${condition} -> ${relPath} (missing)`);
+      failures.push(`${label} -> ${target} (missing)`);
     }
+    return;
   }
+  for (const [condition, child] of Object.entries(target)) {
+    await check(`${label} -> ${condition}`, child);
+  }
+}
+
+for (const [subpath, conditions] of Object.entries(pkg.exports)) {
+  await check(subpath, conditions);
 }
 
 if (failures.length > 0) {
