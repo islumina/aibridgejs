@@ -331,14 +331,53 @@ export function createBridge(options: BridgeOptions): Bridge {
 
   async function emit(event: string, payload?: unknown, opts?: EmitOptions): Promise<void> {
     throwIfDisposed();
-    const signal = opts?.signal;
-    if (signal?.aborted) {
-      throw signal.reason;
+    const userSignal = opts?.signal;
+    if (userSignal?.aborted) {
+      throw userSignal.reason;
     }
 
+    // EmitOptions.timeoutMs bounds the readiness wait AND adapter.post(), so
+    // the deadline is armed BEFORE awaiting ready(). It is expressed as an
+    // internal abort signal (merged with the caller's, if any) so readiness and
+    // post() both race one signal. A non-positive timeout (<= 0) DISABLES the
+    // timer, mirroring call()'s BRG-R-02 contract; only a positive value arms
+    // it. `disarm` clears the timer and detaches the forwarding listener on
+    // EVERY settle path (the finally below), so nothing fires late.
+    const emitTimeoutMs = opts?.timeoutMs;
+    let signal = userSignal;
+    let disarm: (() => void) | undefined;
+    if (emitTimeoutMs !== undefined && emitTimeoutMs > 0) {
+      const deadline = new AbortController();
+      const timer = setTimeout(() => {
+        deadline.abort(new BridgeTimeoutError(`Emit timeout: ${event}`));
+      }, emitTimeoutMs);
+      const forwardAbort = (): void => {
+        deadline.abort(userSignal!.reason);
+      };
+      userSignal?.addEventListener("abort", forwardAbort, { once: true });
+      disarm = (): void => {
+        clearTimeout(timer);
+        userSignal?.removeEventListener("abort", forwardAbort);
+      };
+      signal = deadline.signal;
+    }
+
+    try {
+      await postEvent(event, payload, signal);
+    } finally {
+      disarm?.();
+    }
+  }
+
+  async function postEvent(
+    event: string,
+    payload: unknown,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const capturedEpoch = resetEpoch;
     // Thread the signal through readiness so a hung adapter.ready() can be
-    // unstuck by this single emit's abort, not only by reset()/dispose().
+    // unstuck by this single emit's abort or deadline, not only by
+    // reset()/dispose().
     await (signal !== undefined ? ready({ signal }) : ready());
 
     if (disposed) throw new BridgeDisposedError();
@@ -355,33 +394,27 @@ export function createBridge(options: BridgeOptions): Bridge {
     // emit() registers no pending-map entry (it is fire-and-forget, with no
     // response to correlate). The only thing still in flight after readiness is
     // adapter.post(), which on some transports (e.g. a Flutter callHandler that
-    // never settles) can hang. We therefore race post() against an OPTIONAL
-    // per-call timeout and the caller's abort signal, mirroring call()'s
-    // cancellation semantics. Both the timer and the abort listener are torn
+    // never settles) can hang. We therefore race post() against the signal
+    // (the caller's abort and/or the per-call deadline armed in emit()),
+    // mirroring call()'s cancellation semantics. The abort listener is torn
     // down on EVERY settle path so a successful (or already-rejected) emit
-    // leaves no orphaned timer firing later and no listener pinned on the
-    // signal — the same teardown discipline call()'s cleanup() enforces.
-    const emitTimeoutMs = opts?.timeoutMs;
+    // leaves no listener pinned on the signal — the same teardown discipline
+    // call()'s cleanup() enforces.
 
     // Fast path: no per-call timeout and no signal → behave exactly as the
     // pre-cancellation emit did (a bare awaited post()). Keeps the additive
     // change a strict superset and avoids wrapping cost on the common call.
-    if ((emitTimeoutMs === undefined || emitTimeoutMs <= 0) && signal === undefined) {
+    if (signal === undefined) {
       await adapter.post(envelope);
       return;
     }
 
     await new Promise<void>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
       let abortHandler: (() => void) | undefined;
       let settled = false;
 
       const cleanup = (): void => {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        if (signal && abortHandler) {
+        if (abortHandler) {
           signal.removeEventListener("abort", abortHandler);
           abortHandler = undefined;
         }
@@ -400,20 +433,10 @@ export function createBridge(options: BridgeOptions): Bridge {
         reject(reason);
       };
 
-      // A non-positive timeout (<= 0) DISABLES the timer, mirroring call()'s
-      // BRG-R-02 contract; only a positive value arms it.
-      if (emitTimeoutMs !== undefined && emitTimeoutMs > 0) {
-        timer = setTimeout(() => {
-          settleReject(new BridgeTimeoutError(`Emit timeout: ${event}`));
-        }, emitTimeoutMs);
-      }
-
-      if (signal) {
-        abortHandler = (): void => {
-          settleReject(signal.reason);
-        };
-        signal.addEventListener("abort", abortHandler, { once: true });
-      }
+      abortHandler = (): void => {
+        settleReject(signal.reason);
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
 
       adapter.post(envelope).then(settleResolve, settleReject);
     });

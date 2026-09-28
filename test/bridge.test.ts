@@ -900,6 +900,54 @@ describe("aibridgejs additional correctness", () => {
     bridge.dispose();
   });
 
+  test("E6: emit() timeoutMs also bounds a hung readiness wait (EmitOptions.timeoutMs contract)", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.ready = () => new Promise<void>(() => {}); // never readies
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+
+    let settled: unknown = null;
+    const pending = bridge.emit("e", undefined, { timeoutMs: 100 }).then(
+      () => {
+        settled = "resolved";
+      },
+      (err: unknown) => {
+        settled = err;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(settled).toBeInstanceOf(BridgeTimeoutError);
+    expect((settled as Error).message).toBe("Emit timeout: e");
+    bridge.dispose();
+    await pending;
+  });
+
+  test("E6b: emit() timeoutMs + signal during readiness — abort still wins and nothing is left armed", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.ready = () => new Promise<void>(() => {}); // never readies
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    const pending = bridge.emit("e", undefined, { timeoutMs: 1000, signal: controller.signal });
+    const reason = new Error("aborted during ready");
+    const assertion = expect(pending).rejects.toBe(reason);
+    controller.abort(reason);
+    await assertion;
+
+    // Deadline timer cleared and the caller's signal listener detached on settle.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    expect(postSpy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
   test("call/emit reject and on/reset throw synchronously after dispose", async () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
