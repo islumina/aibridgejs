@@ -506,6 +506,63 @@ describe("aibridgejs additional correctness", () => {
     expect(innerCalls).toBe(1);
   });
 
+  test("A8b: dispose() from a listener stops fan-out for later siblings, including once", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    const spyC = vi.fn();
+    bridge.on("e", () => bridge.dispose());
+    bridge.on("e", spyB);
+    bridge.on("e", spyC, { once: true });
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+
+    expect(spyB).not.toHaveBeenCalled();
+    expect(spyC).not.toHaveBeenCalled();
+  });
+
+  test("A8c: a sibling unsubscribe() during dispatch skips that sibling this cycle", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    let off: (() => void) | undefined;
+    bridge.on("e", () => off?.());
+    off = bridge.on("e", spyB);
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+
+    // The listener is truly gone, not just skipped once.
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("A8d: a sibling's signal abort during dispatch skips that sibling this cycle", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    const ctrl = new AbortController();
+    bridge.on("e", () => ctrl.abort());
+    bridge.on("e", spyB, { signal: ctrl.signal });
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("A8e: reset() from a listener stops fan-out for later siblings", async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    bridge.on("e", () => bridge.reset());
+    bridge.on("e", spyB);
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
   test("A9: response ok:false rejects with BridgeRemoteError carrying code/message/detail", async () => {
     const adapter = createMockAdapter();
     adapter.subscribe((envelope) => {

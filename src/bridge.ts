@@ -27,6 +27,17 @@ interface PendingEntry {
 interface ListenerEntry {
   fn: BridgeListener<unknown>;
   unsubscribe: () => void;
+  // Set true the instant this entry's unsubscribe() runs (dispose, reset,
+  // the listener's own removal, a sibling's unsubscribe, or a signal abort —
+  // see BRG-R-05 below). The event fan-out loop below checks this on every
+  // iteration so a listener removed mid-dispatch (by an earlier listener in
+  // the same fan-out, including via dispose()/reset()) does not still run.
+  // A plain `set.has(entry)` re-check is not enough: reset() clears the
+  // whole `events` map (unsubscribeAllListeners -> events.clear()), which
+  // orphans the in-flight snapshot's Set without emptying it, so membership
+  // alone can't tell a removed entry apart from one still live in a set no
+  // longer reachable from `events`.
+  removed: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -163,7 +174,16 @@ export function createBridge(options: BridgeOptions): Bridge {
         // that need visibility must wrap their own listener body in try/catch.
         // This also means a throwing `envelope.payload` getter degrades to "no
         // listener sees this event" rather than a crash or hang.
+        // BRG-R-05: stop the fan-out the instant dispose() runs (a listener
+        // that calls bridge.dispose() must not let later siblings, including
+        // `once` listeners, run after teardown), and skip any entry whose
+        // `removed` flag a listener already flipped this same cycle (dispose,
+        // reset, its own unsubscribe(), or a sibling's signal abort). See the
+        // ListenerEntry.removed doc comment above for why membership in
+        // `set` alone cannot detect this after reset().
         for (const listenerEntry of Array.from(set)) {
+          if (disposed) break;
+          if (listenerEntry.removed) continue;
           try {
             listenerEntry.fn(envelope.payload);
           } catch {
@@ -480,13 +500,12 @@ export function createBridge(options: BridgeOptions): Bridge {
     const signal = opts?.signal;
     const once = opts?.once === true;
 
-    let removed = false;
     // biome-ignore lint/style/useConst: hoisted so the unsubscribe closure can reference entry by identity
     let entry!: ListenerEntry;
 
     const unsubscribe = (): void => {
-      if (removed) return;
-      removed = true;
+      if (entry.removed) return;
+      entry.removed = true;
       const s = events.get(event);
       if (s) {
         s.delete(entry);
@@ -502,7 +521,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         }
       : (listener as BridgeListener<unknown>);
 
-    entry = { fn: wrapped, unsubscribe };
+    entry = { fn: wrapped, unsubscribe, removed: false };
     set.add(entry);
 
     if (signal) {
