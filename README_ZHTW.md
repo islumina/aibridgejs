@@ -39,7 +39,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - `createBridge({ adapter, timeoutMs? })` 用單一 adapter 建立 bridge。
 - `bridge.ready({ signal }?)` 等待 adapter ready。
 - `bridge.call<T>(method, payload?, { timeoutMs, signal }?)` 發送 request 並解析 remote response payload。
-- `bridge.emit(event, payload?)` 在 ready 後送出 fire-and-forget event。
+- `bridge.emit(event, payload?, { signal, timeoutMs }?)` 在 ready 後送出 fire-and-forget event；選用的 `signal` / `timeoutMs` 可取消或限制單次 emit 的時間。
 - `bridge.on<T>(event, listener, { signal, once }?)` 訂閱 inbound event。
 - `bridge.platform()` 回傳 `"iframe"`、`"flutter"`、`"mock"` 或 `"unknown"`。
 - `bridge.reset()` 拒絕 pending calls 並重建 adapter subscription。
@@ -57,11 +57,13 @@ await bridge.emit("analytics/event", { name: "opened" });
 ## 注意事項
 
 - Payload 必須 JSON-safe。bridge 不驗證 cloneability 或 schema；請在 app 邊界驗證。
-- `call()` 支援單次 `signal` 與 `timeoutMs`。`emit()` 沒有單次取消/逾時；它會等待 ready 與 adapter `post()`。
+- `call()` 與 `emit()` 都支援單次 `signal` 與 `timeoutMs`。`emit()` 的選項是 opt-in：省略時維持 fire-and-forget（等待 ready 與 adapter `post()`，無時間限制）。
 - `timeoutMs <= 0` 會關閉 call timer。若 remote 可能 hang，請搭配 `AbortSignal`。
 - `reset()` 會用 `BridgeResetError` 拒絕所有 pending calls；listener 會保留並套到新 subscription。
 - iframe 安全性依賴精確 origin allowlist。若同 origin 有多個頁面共用通道，請傳入 `expectedSource`。
 - Flutter readiness error 屬於 adapter-level；native handler 名稱要跟 app release 一起穩定管理。
+- Event listener 拋出的錯誤會被隔離並丟棄，這是設計上的行為——單一異常的 listener 不會中斷其他 sibling 的 fan-out。若需要觀察錯誤，請自行在 handler 內包 `try/catch`。
+- `dispose()` 之後，`ready()`、`platform()`、`on()`、`reset()` 會同步 throw `BridgeDisposedError`，而不是 reject——這點跟會 reject 的 `call()` / `emit()` 不同。若程式碼假設 `bridge.ready().then(...).catch(...)`，bridge 已經 dispose 時會直接讓呼叫端 crash。
 
 ## AI Context
 
