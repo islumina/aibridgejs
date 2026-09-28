@@ -1111,6 +1111,21 @@ describe("aibridgejs additional correctness", () => {
     expect(() => bridge.reset()).toThrow(BridgeDisposedError);
   });
 
+  test("aibridgejs-12: ready() throws BridgeDisposedError synchronously after dispose, unlike call()/emit()", () => {
+    // Unlike call() and emit(), which are `async function`s (so a throw
+    // inside them is automatically turned into a rejected promise), ready()
+    // is a plain function that calls throwIfDisposed() before returning any
+    // promise at all. Code written as `bridge.ready().then(...).catch(...)`
+    // therefore throws before `.catch` is ever attached, instead of being
+    // caught by it. This is documented in README/STABILITY alongside
+    // platform() (which has the same synchronous-throw shape and is already
+    // covered by its own test above).
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    bridge.dispose();
+    expect(() => bridge.ready()).toThrow(BridgeDisposedError);
+  });
+
   test("ready rejects when bridge is disposed mid-flight", async () => {
     const adapter = createMockAdapter();
     // Override ready to never resolve so we can dispose mid-flight.
