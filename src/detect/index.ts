@@ -4,6 +4,7 @@ import {
   createFlutterAdapter,
 } from "../flutter/index.js";
 import { type IframeAdapterOptions, createIframeAdapter } from "../iframe/index.js";
+import { invalid, isObject } from "../internal.js";
 import { createMockAdapter } from "../mock/index.js";
 import type { BridgeAdapter } from "../types.js";
 
@@ -33,6 +34,7 @@ interface DetectHost {
  * See [STABILITY.md](../STABILITY.md) for the full per-subpath safety table.
  */
 export function detectBridgeAdapter(host: DetectHost, options: DetectOptions = {}): BridgeAdapter {
+  if (!isObject(options)) invalid("options", "an object");
   // Feature-check, not just a shape probe: createFlutterAdapter registers a
   // platform-ready listener via host.addEventListener and detaches it in
   // dispose() via host.removeEventListener (waitForReadyEvent defaults to
@@ -50,27 +52,11 @@ export function detectBridgeAdapter(host: DetectHost, options: DetectOptions = {
   }
 
   if (host?.parent && host.parent !== host) {
-    // Feature-check, mirroring the Flutter branch above (BRG-B-01):
-    // createIframeAdapter registers/unregisters a "message" listener via
-    // host.addEventListener/removeEventListener unconditionally.
-    // DetectHost marks these optional (a pure-web / SSR-shim host may lack
-    // them), so a host with a distinct `parent` but no callable listener
-    // methods would otherwise raise a raw TypeError inside
-    // createIframeAdapter instead of a descriptive error (aibridgejs-13).
-    if (
-      typeof host.addEventListener !== "function" ||
-      typeof host.removeEventListener !== "function"
-    ) {
-      throw new Error(
-        "detectBridgeAdapter: iframe host detected but addEventListener/removeEventListener are not both callable",
-      );
-    }
-    if (!options.iframe || !options.iframe.targetOrigin) {
-      throw new Error(
-        "detectBridgeAdapter: iframe host detected but options.iframe.targetOrigin is missing",
-      );
-    }
-    return createIframeAdapter(host as never, options.iframe);
+    // createIframeAdapter validates the host's listener methods (DetectHost
+    // marks them optional) and options.iframe.targetOrigin before any side
+    // effect, so a misconfigured iframe host gets a descriptive BridgeError
+    // rather than a raw TypeError (aibridgejs-13).
+    return createIframeAdapter(host as never, options.iframe as IframeAdapterOptions);
   }
 
   return createMockAdapter();

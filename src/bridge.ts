@@ -4,10 +4,10 @@ import {
   BridgeResetError,
   BridgeTimeoutError,
 } from "./errors.js";
-import { generateId, isValidEnvelope, now } from "./internal.js";
+import { generateId, now } from "./id.js";
+import { invalid, isObject, isValidEnvelope } from "./internal.js";
 import type {
   Bridge,
-  BridgeAdapter,
   BridgeEnvelope,
   BridgeListener,
   BridgeOptions,
@@ -19,41 +19,36 @@ import type {
   ResponseEnvelope,
 } from "./types.js";
 
-// BridgeAdapter.post() is typed to return a Promise, but a type-valid custom
-// adapter can still throw synchronously (before returning) or return a
-// non-thenable. Either escapes a bare `adapter.post(envelope).catch(...)` /
-// `.then(...)` call: a synchronous throw skips every settle path registered
-// around the call (the pending entry, its timer, its abort listener), and a
-// non-promise return makes `.catch`/`.then` itself throw a TypeError. Route
-// every adapter.post() call through this wrapper so both cases become an
-// ordinary rejection on the returned promise instead (aibridgejs-6).
-function safePost(adapter: BridgeAdapter, envelope: BridgeEnvelope): Promise<void> {
+// Adapter methods are typed to return a Promise, but a type-valid custom
+// adapter can still throw synchronously or return a non-thenable. Route every
+// adapter.ready() / adapter.post() call through this wrapper so a sync throw
+// becomes an ordinary rejection (every settle path registered around the call
+// still runs) and a non-promise return resolves instead of making
+// `.then`/`.catch` itself throw.
+function attempt(fn: () => Promise<void>): Promise<void> {
   try {
-    return Promise.resolve(adapter.post(envelope));
+    return Promise.resolve(fn());
   } catch (err) {
     return Promise.reject(err);
   }
 }
 
+// One in-flight call() or emit(). Both methods are settle-once: the first of
+// resolve/reject wins and runs the operation's whole teardown.
 interface PendingEntry {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
-  cleanup: () => void;
 }
 
 interface ListenerEntry {
   fn: BridgeListener<unknown>;
   unsubscribe: () => void;
-  // Set true the instant this entry's unsubscribe() runs (dispose, reset,
-  // the listener's own removal, a sibling's unsubscribe, or a signal abort —
-  // see BRG-R-05 below). The event fan-out loop below checks this on every
-  // iteration so a listener removed mid-dispatch (by an earlier listener in
-  // the same fan-out, including via dispose()/reset()) does not still run.
-  // A plain `set.has(entry)` re-check is not enough: reset() clears the
-  // whole `events` map (unsubscribeAllListeners -> events.clear()), which
-  // orphans the in-flight snapshot's Set without emptying it, so membership
-  // alone can't tell a removed entry apart from one still live in a set no
-  // longer reachable from `events`.
+  // Set true the instant this entry's unsubscribe() runs (its own removal, a
+  // sibling's unsubscribe, a signal abort, a `once` listener going inert
+  // before its first call, or dispose()). The fan-out loop checks this on
+  // every iteration so a listener removed mid-dispatch — including by a
+  // nested dispatch — does not still run from the outer loop's snapshot.
+  // reset() is not a removal path: only dispose() removes listeners in bulk.
   removed: boolean;
 }
 
@@ -65,35 +60,44 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 // deadline.
 const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
+const ADAPTER_METHODS = ["ready", "post", "subscribe", "dispose"] as const;
+
 // A missing or NaN timeout (e.g. `Number(badEnvValue)`) takes the fallback. NaN
 // fails both `> 0` and `<= 0`, so it would otherwise silently disable the timer.
 function timeoutOr(timeoutMs: number | undefined, fallback: number): number {
   return timeoutMs === undefined || Number.isNaN(timeoutMs) ? fallback : timeoutMs;
 }
 
-// The delay to arm for a timeout, or undefined for "no timer": non-positive
-// (<= 0, BRG-R-02) and Infinity disable it; finite values above the 32-bit
-// limit are clamped to it rather than overflowing.
-function timerDelay(timeoutMs: number): number | undefined {
+// The only source of setTimeout delays (ai*js family timer rule, optional
+// deadlines): undefined means "no timer". Non-positive (<= 0, BRG-R-02) and
+// Infinity disable it; finite values above the 32-bit limit are clamped to it
+// rather than overflowing.
+function clampDelay(timeoutMs: number): number | undefined {
   if (!(timeoutMs > 0) || timeoutMs === Number.POSITIVE_INFINITY) return undefined;
   return Math.min(timeoutMs, MAX_TIMER_DELAY_MS);
 }
 
 export function createBridge(options: BridgeOptions): Bridge {
+  if (!isObject(options)) invalid("options", "an object");
   const adapter = options.adapter;
+  if (!isObject(adapter) || ADAPTER_METHODS.some((key) => typeof adapter[key] !== "function")) {
+    invalid("adapter", "an object with ready, post, subscribe and dispose functions");
+  }
   const defaultTimeoutMs = timeoutOr(options.timeoutMs, DEFAULT_TIMEOUT_MS);
 
+  // Every in-flight call() and emit(), from entry to settle: reset() and
+  // dispose() reject whatever is still here. `pending` indexes the calls that
+  // have posted their request by id, for response correlation only.
+  const inflight = new Set<PendingEntry>();
   const pending = new Map<string, PendingEntry>();
   const events = new Map<string, Set<ListenerEntry>>();
-  const internalController = new AbortController();
   let disposed = false;
   let readyPromise: Promise<void> | null = null;
-  // Captured `reject` of the cached `readyPromise`, so that `reset()` can
-  // settle ready waiters synchronously instead of leaving them parked
-  // forever on a slow adapter.ready(). Cleared whenever readyPromise resolves,
-  // rejects, or is invalidated by reset / dispose.
-  let readyReject: ((reason: unknown) => void) | null = null;
-  let resetEpoch = 0;
+  // The live readiness round. Its signal is the one adapter.ready() observes;
+  // reset() aborts it with BridgeResetError and dispose() with
+  // BridgeDisposedError, which also settles every bridge-side ready waiter
+  // even when the adapter ignores the signal. Cleared once the round settles.
+  let round: AbortController | null = null;
 
   const unsubscribeAdapter = adapter.subscribe((envelope) => {
     if (disposed) return;
@@ -101,26 +105,19 @@ export function createBridge(options: BridgeOptions): Bridge {
 
     switch (envelope.kind) {
       case "response": {
-        // Read the id exactly once into a local and reuse it for both the
-        // lookup and the delete. The pre-0.5.6 handler read `envelope.id`
-        // twice (get + delete); a value-varying getter could delete the wrong
-        // key, leaking the real pending entry and desynchronising settlement.
+        // Read the id exactly once into a local: a value-varying getter must
+        // not look up one entry and settle another.
         const id = envelope.id;
         const entry = pending.get(id);
         if (!entry) return;
 
         // Capture every field this branch needs (ok, and on success payload;
-        // on failure the error object) BEFORE mutating `pending` or calling
-        // entry.cleanup(). The envelope crosses an untrusted boundary: any of
-        // these may be a throwing getter. The 0.5.1 fix guarded only the
-        // ok:false message/code reads — but on the ok:true success path
-        // `envelope.ok` and `envelope.payload` were read AFTER cleanup() had
-        // cleared the timeout and detached the abort listener, so a throw
-        // there left the call promise hanging forever, past its own timeout
-        // and beyond any AbortSignal. Reading first means any throw becomes a
-        // deterministic reject of THIS call (BRG-S-01). `ok` and `payload` are
-        // each read exactly once into locals; `payload` is only touched on the
-        // success path so an error response's payload getter is never invoked.
+        // on failure the error object) BEFORE settling the entry. The envelope
+        // crosses an untrusted boundary: any of these may be a throwing
+        // getter, and a throw must become a deterministic reject of THIS call
+        // rather than escape after its timer and abort listener are gone
+        // (BRG-S-01). `payload` is only touched on the success path so an
+        // error response's payload getter is never invoked.
         let ok: boolean;
         let payload: unknown;
         let errorObject: ResponseEnvelope["error"];
@@ -133,58 +130,40 @@ export function createBridge(options: BridgeOptions): Bridge {
             errorObject = envelope.error;
           }
         } catch {
-          // A field getter threw. We cannot trust this response; settle the
-          // call deterministically with a safe remote-error rather than hang.
           ok = false;
           payload = undefined;
           errorObject = undefined;
           readThrew = true;
         }
 
-        pending.delete(id);
-        entry.cleanup();
-
         if (!readThrew && ok) {
           entry.resolve(payload);
-        } else {
-          // Defensive coercion: ResponseEnvelope types code/message as strings,
-          // but a malformed host sending a non-string code/message must not
-          // surface a non-string on BridgeRemoteError (whose code/message are
-          // typed string). Fall back to the defaults when a field is missing,
-          // the wrong type, or unreadable (readThrew, where errorObject is the
-          // safe `undefined`).
-          //
-          // The reads below are wrapped in try/catch for the same throwing-
-          // getter reason: `errorObject.message` / `.code` / `.detail` may
-          // themselves throw. The fallback values match the type-mismatch
-          // fallbacks above.
-          let message = "Remote error";
-          let code = "REMOTE_ERROR";
-          let detail: unknown;
-          try {
-            // Read each field exactly once: with hostile getters/proxies a
-            // second access could re-run side effects or return a different
-            // (non-string) value than the typeof check observed.
-            const rawMessage: unknown = errorObject?.message;
-            const rawCode: unknown = errorObject?.code;
-            if (typeof rawMessage === "string") message = rawMessage;
-            if (typeof rawCode === "string") code = rawCode;
-            detail = errorObject?.detail;
-          } catch {
-            // Getter threw — keep the safe defaults already assigned above.
-          }
-          entry.reject(new BridgeRemoteError(message, code, detail));
+          return;
         }
+        // Defensive coercion: a malformed host sending a non-string
+        // code/message must not surface a non-string on BridgeRemoteError
+        // (whose code/message are typed string). Each field is read exactly
+        // once inside a guard, since `errorObject` may itself carry throwing
+        // or value-varying getters; any failure keeps the safe defaults.
+        let message = "Remote error";
+        let code = "REMOTE_ERROR";
+        let detail: unknown;
+        try {
+          const rawMessage: unknown = errorObject?.message;
+          const rawCode: unknown = errorObject?.code;
+          if (typeof rawMessage === "string") message = rawMessage;
+          if (typeof rawCode === "string") code = rawCode;
+          detail = errorObject?.detail;
+        } catch {
+          // Getter threw — keep the safe defaults already assigned above.
+        }
+        entry.reject(new BridgeRemoteError(message, code, detail));
         return;
       }
       case "event": {
-        // Read `event` and `payload` exactly once, up front, inside a guard.
-        // Both may be getters on an in-process envelope (mock/flutter
-        // `receive()`, a custom adapter): isValidEnvelope already read
-        // `event` once to validate it, so this is a second access, and a
-        // value-varying or throwing getter must not (a) throw out of the
-        // adapter's dispatch loop and starve every later subscriber it was
-        // iterating, or (b) hand different listeners in the fan-out below
+        // Read `event` and `payload` exactly once, up front, inside a guard: a
+        // value-varying or throwing getter on an in-process envelope must not
+        // throw out of the adapter's dispatch loop or hand different listeners
         // different payload values (aibridgejs-11).
         let eventName: unknown;
         let eventPayload: unknown;
@@ -198,22 +177,14 @@ export function createBridge(options: BridgeOptions): Bridge {
 
         const set = events.get(eventName);
         if (!set) return;
-        // Listener-error swallow strategy (FAM-S-07): each subscriber is invoked
-        // inside its own try/catch and any throw is intentionally discarded.
-        // Rationale: event dispatch is a fan-out with no return channel, so one
-        // misbehaving listener must not abort the loop and starve its siblings,
-        // nor escape into the adapter's inbound-message callback (which has no
-        // sensible recovery and, on some transports, would surface as an
-        // unhandled error). The bridge deliberately does NOT expose these
-        // errors: there is no onError hook in the 0.x stable surface. Consumers
-        // that need visibility must wrap their own listener body in try/catch.
-        // BRG-R-05: stop the fan-out the instant dispose() runs (a listener
-        // that calls bridge.dispose() must not let later siblings, including
-        // `once` listeners, run after teardown), and skip any entry whose
-        // `removed` flag a listener already flipped this same cycle (dispose,
-        // reset, its own unsubscribe(), or a sibling's signal abort). See the
-        // ListenerEntry.removed doc comment above for why membership in
-        // `set` alone cannot detect this after reset().
+        // Synchronous, depth-first fan-out over a snapshot (ai*js family
+        // re-entrancy rule): a nested dispatch from inside a listener runs to
+        // completion before this loop resumes; entries removed meanwhile are
+        // skipped; dispose() stops the loop outright (BRG-R-05).
+        // Listener throws are discarded by design (FAM-S-07): one misbehaving
+        // listener must not starve its siblings or escape into the adapter's
+        // inbound callback. There is no onError hook in the stable surface;
+        // consumers wrap their own listener body in try/catch.
         for (const listenerEntry of Array.from(set)) {
           if (disposed) break;
           if (listenerEntry.removed) continue;
@@ -245,41 +216,25 @@ export function createBridge(options: BridgeOptions): Bridge {
     }
 
     if (!readyPromise) {
-      // The bridge wraps adapter.ready so that dispose() / reset() can settle
-      // the cached promise even when an adapter ignores its signal argument.
+      const controller = new AbortController();
+      const { signal } = controller;
+      round = controller;
       readyPromise = new Promise<void>((resolve, reject) => {
-        // Hoisted so wrappedReject can remove this exact listener by identity.
-        // biome-ignore lint/style/useConst: assigned below before any call site runs
-        let onDisposed!: () => void;
-        // Identity-guarded reject. After reset() invalidates this promise and
-        // a new one takes its place, a late adapter.ready() resolve/reject
-        // from THIS round must not clear the NEW round's readyReject. We
-        // capture the local function and only clear the module-level slot if
-        // it still points at our handle. It also detaches the dispose listener
-        // on every settle path, so repeated reset() against a hung
-        // adapter.ready() can't accumulate orphaned listeners on the signal.
-        const wrappedReject = (reason: unknown): void => {
-          internalController.signal.removeEventListener("abort", onDisposed);
-          if (readyReject === wrappedReject) readyReject = null;
-          reject(reason);
+        // Settles on the first of: adapter.ready() resolving or rejecting,
+        // or this round's signal aborting (reset / dispose). Detaches the
+        // abort listener on every path, and only clears `round` while it
+        // still points at this round, so a late settle of a round that
+        // reset() already replaced cannot clobber the new one.
+        const settle = (fn: () => void): void => {
+          signal.removeEventListener("abort", onAbort);
+          if (round === controller) round = null;
+          fn();
         };
-        readyReject = wrappedReject;
-
-        onDisposed = (): void => {
-          wrappedReject(new BridgeDisposedError());
-        };
-        internalController.signal.addEventListener("abort", onDisposed, { once: true });
-
-        adapter.ready(internalController.signal).then(
-          () => {
-            internalController.signal.removeEventListener("abort", onDisposed);
-            if (readyReject === wrappedReject) readyReject = null;
-            if (disposed) reject(new BridgeDisposedError());
-            else resolve();
-          },
-          (err) => {
-            wrappedReject(err);
-          },
+        const onAbort = (): void => settle(() => reject(signal.reason));
+        signal.addEventListener("abort", onAbort, { once: true });
+        attempt(() => adapter.ready(signal)).then(
+          () => settle(resolve),
+          (err: unknown) => settle(() => reject(err)),
         );
       });
     }
@@ -308,6 +263,53 @@ export function createBridge(options: BridgeOptions): Bridge {
     });
   }
 
+  // Shared by call() and emit(), entered synchronously from their entry. The
+  // deadline is armed here, before readiness, so it bounds the readiness wait,
+  // adapter.post() and (for call()) the response wait. The caller's signal,
+  // the deadline, reset()/dispose() (via `inflight`) and the operation itself
+  // all race to settle one entry; the first wins and every path runs the same
+  // teardown. Both operations chain directly on the shared ready promise, so
+  // pre-ready call()/emit() post in FIFO order whatever options they pass.
+  function send<T>(
+    signal: AbortSignal | undefined,
+    delay: number | undefined,
+    timeoutMessage: string,
+    envelope: () => BridgeEnvelope,
+    id?: string,
+  ): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const settle = (fn: () => void): void => {
+        if (!inflight.delete(entry)) return;
+        clearTimeout(timer);
+        signal?.removeEventListener("abort", onAbort);
+        if (id !== undefined) pending.delete(id);
+        fn();
+      };
+      const entry: PendingEntry = {
+        resolve: (value) => settle(() => resolve(value as T)),
+        reject: (reason) => settle(() => reject(reason)),
+      };
+      const onAbort = (): void => entry.reject(signal?.reason);
+
+      inflight.add(entry);
+      signal?.addEventListener("abort", onAbort, { once: true });
+      if (delay !== undefined) {
+        timer = setTimeout(() => entry.reject(new BridgeTimeoutError(timeoutMessage)), delay);
+      }
+      ready()
+        .then(() => {
+          if (!inflight.has(entry)) return;
+          // SAFETY (call only): the resolved value is whatever the host sent.
+          // `T` is a caller assertion; the runtime does not validate response
+          // payloads — validate with a schema library at the boundary.
+          if (id !== undefined) pending.set(id, entry);
+          return attempt(() => adapter.post(envelope()));
+        })
+        .then(id === undefined ? entry.resolve : undefined, entry.reject);
+    });
+  }
+
   async function call<T = unknown>(
     method: string,
     payload?: unknown,
@@ -318,203 +320,34 @@ export function createBridge(options: BridgeOptions): Bridge {
     if (signal?.aborted) {
       throw signal.reason;
     }
-
-    const capturedEpoch = resetEpoch;
-    await (signal !== undefined ? ready({ signal }) : ready());
-
-    if (disposed) throw new BridgeDisposedError();
-    if (resetEpoch !== capturedEpoch) throw new BridgeResetError();
-    if (signal?.aborted) throw signal.reason;
-
+    // A non-positive timeout (<= 0) or Infinity arms no timer (BRG-R-02): the
+    // call then stays pending until a response, its signal, reset() or
+    // dispose() settles it. Pass 0 only with your own AbortSignal deadline.
     const id = generateId();
-    const callDelayMs = timerDelay(timeoutOr(opts?.timeoutMs, defaultTimeoutMs));
-
-    return new Promise<T>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      let abortHandler: (() => void) | undefined;
-
-      const cleanup = (): void => {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        if (signal && abortHandler) {
-          signal.removeEventListener("abort", abortHandler);
-          abortHandler = undefined;
-        }
-      };
-
-      // SAFETY: the cast widens `(value: T) => void` to `(value: unknown) => void`
-      // so the adapter dispatch path (which sees envelopes as `unknown`) can
-      // call resolve without re-introducing generics into the PendingEntry
-      // map. This is sound because the runtime does NOT validate response
-      // payloads — `T` is a caller assertion; the resolved value is whatever
-      // the host actually sent. Callers that need runtime narrowing should
-      // validate with Zod / Valibot at the boundary (see README).
-      pending.set(id, {
-        resolve: resolve as (value: unknown) => void,
-        reject,
-        cleanup,
-      });
-
-      // A non-positive timeout (<= 0) DISABLES the per-call timer entirely
-      // (BRG-R-02). The call then stays pending until it is settled by a
-      // response, an AbortSignal, reset(), or dispose(). This is the documented
-      // contract (see README "createBridge" / "call"): pass 0 only when you
-      // supply your own AbortSignal-based deadline, otherwise a silent host
-      // leaves the entry pinned. The default path (10 s) remains bounded.
-      // Infinity likewise arms no timer; see timerDelay().
-      if (callDelayMs !== undefined) {
-        timer = setTimeout(() => {
-          const current = pending.get(id);
-          if (!current) return;
-          pending.delete(id);
-          current.cleanup();
-          reject(new BridgeTimeoutError(`Call timeout: ${method}`));
-        }, callDelayMs);
-      }
-
-      if (signal) {
-        abortHandler = (): void => {
-          const current = pending.get(id);
-          if (!current) return;
-          pending.delete(id);
-          current.cleanup();
-          reject(signal.reason);
-        };
-        signal.addEventListener("abort", abortHandler, { once: true });
-      }
-
-      const envelope: BridgeEnvelope = {
-        kind: "request",
-        id,
-        method,
-        payload,
-        timestamp: now(),
-      };
-
-      safePost(adapter, envelope).catch((err: unknown) => {
-        const current = pending.get(id);
-        if (!current) return;
-        pending.delete(id);
-        current.cleanup();
-        reject(err);
-      });
-    });
+    return send<T>(
+      signal,
+      clampDelay(timeoutOr(opts?.timeoutMs, defaultTimeoutMs)),
+      `Call timeout: ${method}`,
+      () => ({ kind: "request", id, method, payload, timestamp: now() }),
+      id,
+    );
   }
 
   async function emit(event: string, payload?: unknown, opts?: EmitOptions): Promise<void> {
     throwIfDisposed();
-    const userSignal = opts?.signal;
-    if (userSignal?.aborted) {
-      throw userSignal.reason;
+    const signal = opts?.signal;
+    if (signal?.aborted) {
+      throw signal.reason;
     }
-
-    // EmitOptions.timeoutMs bounds the readiness wait AND adapter.post(), so
-    // the deadline is armed BEFORE awaiting ready(). It is expressed as an
-    // internal abort signal (merged with the caller's, if any) so readiness and
-    // post() both race one signal. A non-positive timeout (<= 0) DISABLES the
-    // timer, mirroring call()'s BRG-R-02 contract; only a positive value arms
-    // it (Infinity / NaN arm none either; see timerDelay()). `disarm` clears
-    // the timer and detaches the forwarding listener on EVERY settle path (the
-    // finally below), so nothing fires late.
-    const emitDelayMs = opts?.timeoutMs === undefined ? undefined : timerDelay(opts.timeoutMs);
-    let signal = userSignal;
-    let disarm: (() => void) | undefined;
-    if (emitDelayMs !== undefined) {
-      const deadline = new AbortController();
-      const timer = setTimeout(() => {
-        deadline.abort(new BridgeTimeoutError(`Emit timeout: ${event}`));
-      }, emitDelayMs);
-      const forwardAbort = (): void => {
-        deadline.abort(userSignal!.reason);
-      };
-      userSignal?.addEventListener("abort", forwardAbort, { once: true });
-      disarm = (): void => {
-        clearTimeout(timer);
-        userSignal?.removeEventListener("abort", forwardAbort);
-      };
-      signal = deadline.signal;
-    }
-
-    try {
-      await postEvent(event, payload, signal);
-    } finally {
-      disarm?.();
-    }
-  }
-
-  async function postEvent(
-    event: string,
-    payload: unknown,
-    signal: AbortSignal | undefined,
-  ): Promise<void> {
-    const capturedEpoch = resetEpoch;
-    // Thread the signal through readiness so a hung adapter.ready() can be
-    // unstuck by this single emit's abort or deadline, not only by
-    // reset()/dispose().
-    await (signal !== undefined ? ready({ signal }) : ready());
-
-    if (disposed) throw new BridgeDisposedError();
-    if (resetEpoch !== capturedEpoch) throw new BridgeResetError();
-    if (signal?.aborted) throw signal.reason;
-
-    const envelope: BridgeEnvelope = {
-      kind: "event",
-      event,
-      payload,
-      timestamp: now(),
-    };
-
-    // emit() registers no pending-map entry (it is fire-and-forget, with no
-    // response to correlate). The only thing still in flight after readiness is
-    // adapter.post(), which on some transports (e.g. a Flutter callHandler that
-    // never settles) can hang. We therefore race post() against the signal
-    // (the caller's abort and/or the per-call deadline armed in emit()),
-    // mirroring call()'s cancellation semantics. The abort listener is torn
-    // down on EVERY settle path so a successful (or already-rejected) emit
-    // leaves no listener pinned on the signal — the same teardown discipline
-    // call()'s cleanup() enforces.
-
-    // Fast path: no per-call timeout and no signal → behave exactly as the
-    // pre-cancellation emit did (a bare awaited post()). Keeps the additive
-    // change a strict superset and avoids wrapping cost on the common call.
-    if (signal === undefined) {
-      await adapter.post(envelope);
-      return;
-    }
-
-    await new Promise<void>((resolve, reject) => {
-      let abortHandler: (() => void) | undefined;
-      let settled = false;
-
-      const cleanup = (): void => {
-        if (abortHandler) {
-          signal.removeEventListener("abort", abortHandler);
-          abortHandler = undefined;
-        }
-      };
-
-      const settleResolve = (): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      };
-      const settleReject = (reason: unknown): void => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        reject(reason);
-      };
-
-      abortHandler = (): void => {
-        settleReject(signal.reason);
-      };
-      signal.addEventListener("abort", abortHandler, { once: true });
-
-      safePost(adapter, envelope).then(settleResolve, settleReject);
-    });
+    // Opt-in deadline: without timeoutMs an emit is unbounded in time but
+    // still reclaimable — reset() and dispose() reject it.
+    const timeoutMs = opts?.timeoutMs;
+    return send<void>(
+      signal,
+      timeoutMs === undefined ? undefined : clampDelay(timeoutMs),
+      `Emit timeout: ${event}`,
+      () => ({ kind: "event", event, payload, timestamp: now() }),
+    );
   }
 
   function on<T = unknown>(
@@ -523,6 +356,7 @@ export function createBridge(options: BridgeOptions): Bridge {
     opts?: OnOptions,
   ): () => void {
     throwIfDisposed();
+    if (typeof listener !== "function") invalid("listener", "a function");
 
     let set = events.get(event);
     if (!set) {
@@ -573,47 +407,36 @@ export function createBridge(options: BridgeOptions): Bridge {
     return adapter.platform;
   }
 
-  function rejectAllPending(err: Error): void {
-    const entries = Array.from(pending.values());
-    pending.clear();
-    for (const entry of entries) {
-      entry.cleanup();
-      entry.reject(err);
-    }
+  function rejectInflight(err: Error): void {
+    for (const entry of Array.from(inflight)) entry.reject(err);
   }
 
-  function unsubscribeAllListeners(): void {
-    const allEntries: ListenerEntry[] = [];
-    for (const set of events.values()) {
-      for (const entry of set) allEntries.push(entry);
-    }
-    events.clear();
-    for (const entry of allEntries) {
-      entry.unsubscribe();
-    }
+  // Forget cached readiness and abort the live round. `round` and
+  // `readyPromise` are cleared BEFORE the abort, which runs adapter listeners
+  // synchronously: a call()/emit() they issue starts a fresh round instead of
+  // chaining on the aborted one.
+  function endRound(reason: Error): void {
+    const live = round;
+    round = null;
+    readyPromise = null;
+    live?.abort(reason);
   }
 
   function reset(): void {
     throwIfDisposed();
-    resetEpoch++;
-    rejectAllPending(new BridgeResetError());
-    unsubscribeAllListeners();
-    // Settle any call() / ready() waiters that are still parked on the
-    // current readyPromise — otherwise a slow / hung adapter.ready() would
-    // strand them indefinitely past reset.
-    if (readyReject) {
-      readyReject(new BridgeResetError());
-      readyReject = null;
-    }
-    readyPromise = null;
+    rejectInflight(new BridgeResetError());
+    endRound(new BridgeResetError());
   }
 
   function dispose(): void {
     if (disposed) return;
     disposed = true;
-    internalController.abort(new BridgeDisposedError());
-    rejectAllPending(new BridgeDisposedError());
-    unsubscribeAllListeners();
+    rejectInflight(new BridgeDisposedError());
+    endRound(new BridgeDisposedError());
+    const allEntries: ListenerEntry[] = [];
+    for (const set of events.values()) allEntries.push(...set);
+    events.clear();
+    for (const entry of allEntries) entry.unsubscribe();
     unsubscribeAdapter();
     adapter.dispose();
   }

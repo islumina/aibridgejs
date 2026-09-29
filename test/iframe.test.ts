@@ -1,4 +1,5 @@
 import { describe, expect, test, vi } from "vitest";
+import { BridgeError } from "../src/errors.js";
 import {
   type IframeHost,
   type MessageEventLike,
@@ -24,14 +25,40 @@ function createHost(): IframeHost & {
 }
 
 describe("aibridgejs iframe adapter", () => {
-  test("A14: wildcard targetOrigin '*' throws at construction", () => {
+  const ORIGIN_MESSAGE = /^aibridgejs: targetOrigin must be an exact origin/;
+
+  test("A14: wildcard targetOrigin '*' throws BridgeError at construction", () => {
     const host = createHost();
-    expect(() => createIframeAdapter(host, { targetOrigin: "*" })).toThrow(/wildcard/);
+    expect(() => createIframeAdapter(host, { targetOrigin: "*" })).toThrow(BridgeError);
+    expect(() => createIframeAdapter(host, { targetOrigin: "*" })).toThrow(ORIGIN_MESSAGE);
   });
 
-  test("empty targetOrigin throws at construction", () => {
+  test("empty targetOrigin throws BridgeError at construction", () => {
     const host = createHost();
-    expect(() => createIframeAdapter(host, { targetOrigin: "" })).toThrow();
+    expect(() => createIframeAdapter(host, { targetOrigin: "" })).toThrow(BridgeError);
+    expect(() => createIframeAdapter(host, { targetOrigin: "" })).toThrow(ORIGIN_MESSAGE);
+  });
+
+  test("a missing or non-object options argument throws BridgeError, not a TypeError", () => {
+    const host = createHost();
+    for (const bad of [undefined, null, 42]) {
+      expect(() => createIframeAdapter(host, bad as never)).toThrow(BridgeError);
+      expect(() => createIframeAdapter(host, bad as never)).toThrow(ORIGIN_MESSAGE);
+    }
+  });
+
+  test("a host without addEventListener/removeEventListener throws BridgeError before any side effect", () => {
+    const message =
+      /^aibridgejs: host must be an object with addEventListener and removeEventListener functions$/;
+    const postTarget = { postMessage: vi.fn() };
+    for (const bad of [undefined, null, {}, { addEventListener: vi.fn() }]) {
+      expect(() =>
+        createIframeAdapter(bad as never, { targetOrigin: "https://a.example", postTarget }),
+      ).toThrow(BridgeError);
+      expect(() =>
+        createIframeAdapter(bad as never, { targetOrigin: "https://a.example", postTarget }),
+      ).toThrow(message);
+    }
   });
 
   test("BRG-S-03: trailing-slash targetOrigin throws at construction", () => {
@@ -41,14 +68,20 @@ describe("aibridgejs iframe adapter", () => {
     // zero diagnostic). Reject it at construction instead.
     const host = createHost();
     expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/" })).toThrow(
-      /origin/i,
+      BridgeError,
+    );
+    expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/" })).toThrow(
+      ORIGIN_MESSAGE,
     );
   });
 
   test("BRG-S-03: targetOrigin with a path throws at construction", () => {
     const host = createHost();
     expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/app" })).toThrow(
-      /origin/i,
+      BridgeError,
+    );
+    expect(() => createIframeAdapter(host, { targetOrigin: "https://example.com/app" })).toThrow(
+      ORIGIN_MESSAGE,
     );
   });
 
@@ -57,7 +90,8 @@ describe("aibridgejs iframe adapter", () => {
     // turning the exact-origin allowlist into an any-opaque-origin allowlist
     // (fail open).
     const host = createHost();
-    expect(() => createIframeAdapter(host, { targetOrigin: "null" })).toThrow(/origin/i);
+    expect(() => createIframeAdapter(host, { targetOrigin: "null" })).toThrow(BridgeError);
+    expect(() => createIframeAdapter(host, { targetOrigin: "null" })).toThrow(ORIGIN_MESSAGE);
   });
 
   test("BRG-S-03: an exact origin (no trailing slash, no path) is accepted", () => {

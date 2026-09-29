@@ -20,8 +20,8 @@ Run `pnpm lint` before PRs. If docs change, regenerate `llms-full.txt`.
 
 - Do not weaken iframe origin/source checks.
 - Keep envelopes JSON-safe and adapter-neutral.
-- Preserve `AbortSignal` semantics for `ready()` and `call()`.
-- Keep `emit()` behavior explicit until its API is intentionally expanded.
+- Preserve `AbortSignal` semantics for `ready()`, `call()` and `emit()`.
+- Keep every in-flight `call()` and `emit()` reclaimable by `reset()` and `dispose()`.
 - Add tests for reset/dispose/timeout paths when bridge state changes.
 
 ## License
