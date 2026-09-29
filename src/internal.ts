@@ -13,26 +13,48 @@ export function isValidEnvelope(value: unknown): value is BridgeEnvelope {
     ok?: unknown;
     timestamp?: unknown;
   };
-  if (typeof v.timestamp !== "number" || !Number.isFinite(v.timestamp)) return false;
 
-  // Identity fields (id / method / event) must be non-empty strings. An empty
-  // string passes a bare typeof check but is never a meaningful envelope id,
-  // method, or event name; rejecting it removes a needless probe surface
-  // (e.g. a response with id:"" probing pending.get("")) — BRG-S-02.
-  switch (v.kind) {
-    case "request":
-      return (
-        typeof v.id === "string" &&
-        v.id.length > 0 &&
-        typeof v.method === "string" &&
-        v.method.length > 0
-      );
-    case "response":
-      return typeof v.id === "string" && v.id.length > 0 && typeof v.ok === "boolean";
-    case "event":
-      return typeof v.event === "string" && v.event.length > 0;
-    default:
-      return false;
+  // Every field read below may be a getter, and an in-process caller (mock /
+  // flutter `receive()`, a custom adapter) can hand the bridge an envelope
+  // whose getters throw or return a different value on each access. The
+  // whole check runs in one try/catch, and each field is read exactly once
+  // into a local before being tested twice (typeof + length), so a throwing
+  // or value-varying getter can neither escape as an uncaught exception into
+  // the adapter's dispatch loop nor pass a different value to the length
+  // check than the typeof check already validated (aibridgejs-11).
+  try {
+    const timestamp = v.timestamp;
+    if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return false;
+
+    // Identity fields (id / method / event) must be non-empty strings. An
+    // empty string passes a bare typeof check but is never a meaningful
+    // envelope id, method, or event name; rejecting it removes a needless
+    // probe surface (e.g. a response with id:"" probing pending.get("")) —
+    // BRG-S-02.
+    switch (v.kind) {
+      case "request": {
+        const id = v.id;
+        const method = v.method;
+        return (
+          typeof id === "string" && id.length > 0 && typeof method === "string" && method.length > 0
+        );
+      }
+      case "response": {
+        const id = v.id;
+        const ok = v.ok;
+        return typeof id === "string" && id.length > 0 && typeof ok === "boolean";
+      }
+      case "event": {
+        const event = v.event;
+        return typeof event === "string" && event.length > 0;
+      }
+      default:
+        return false;
+    }
+  } catch {
+    // A field getter threw during validation — treat the envelope as
+    // invalid rather than let the exception propagate.
+    return false;
   }
 }
 

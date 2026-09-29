@@ -63,6 +63,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
+- After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously rather than rejecting — unlike `call()`/`emit()`, which reject. Code that assumes `bridge.ready().then(...).catch(...)` will crash the caller if the bridge is already disposed.
 
 ## AI Context
 

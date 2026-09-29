@@ -7,6 +7,7 @@ import {
 import { generateId, isValidEnvelope, now } from "./internal.js";
 import type {
   Bridge,
+  BridgeAdapter,
   BridgeEnvelope,
   BridgeListener,
   BridgeOptions,
@@ -18,6 +19,22 @@ import type {
   ResponseEnvelope,
 } from "./types.js";
 
+// BridgeAdapter.post() is typed to return a Promise, but a type-valid custom
+// adapter can still throw synchronously (before returning) or return a
+// non-thenable. Either escapes a bare `adapter.post(envelope).catch(...)` /
+// `.then(...)` call: a synchronous throw skips every settle path registered
+// around the call (the pending entry, its timer, its abort listener), and a
+// non-promise return makes `.catch`/`.then` itself throw a TypeError. Route
+// every adapter.post() call through this wrapper so both cases become an
+// ordinary rejection on the returned promise instead (aibridgejs-6).
+function safePost(adapter: BridgeAdapter, envelope: BridgeEnvelope): Promise<void> {
+  try {
+    return Promise.resolve(adapter.post(envelope));
+  } catch (err) {
+    return Promise.reject(err);
+  }
+}
+
 interface PendingEntry {
   resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
@@ -27,13 +44,44 @@ interface PendingEntry {
 interface ListenerEntry {
   fn: BridgeListener<unknown>;
   unsubscribe: () => void;
+  // Set true the instant this entry's unsubscribe() runs (dispose, reset,
+  // the listener's own removal, a sibling's unsubscribe, or a signal abort —
+  // see BRG-R-05 below). The event fan-out loop below checks this on every
+  // iteration so a listener removed mid-dispatch (by an earlier listener in
+  // the same fan-out, including via dispose()/reset()) does not still run.
+  // A plain `set.has(entry)` re-check is not enough: reset() clears the
+  // whole `events` map (unsubscribeAllListeners -> events.clear()), which
+  // orphans the in-flight snapshot's Set without emptying it, so membership
+  // alone can't tell a removed entry apart from one still live in a set no
+  // longer reachable from `events`.
+  removed: boolean;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 
+// setTimeout stores its delay as a signed 32-bit int: anything larger
+// (including Infinity) overflows and fires after ~1 ms (Node clamps with a
+// TimeoutOverflowWarning; browsers treat it as 0) — the opposite of a long
+// deadline.
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+// A missing or NaN timeout (e.g. `Number(badEnvValue)`) takes the fallback. NaN
+// fails both `> 0` and `<= 0`, so it would otherwise silently disable the timer.
+function timeoutOr(timeoutMs: number | undefined, fallback: number): number {
+  return timeoutMs === undefined || Number.isNaN(timeoutMs) ? fallback : timeoutMs;
+}
+
+// The delay to arm for a timeout, or undefined for "no timer": non-positive
+// (<= 0, BRG-R-02) and Infinity disable it; finite values above the 32-bit
+// limit are clamped to it rather than overflowing.
+function timerDelay(timeoutMs: number): number | undefined {
+  if (!(timeoutMs > 0) || timeoutMs === Number.POSITIVE_INFINITY) return undefined;
+  return Math.min(timeoutMs, MAX_TIMER_DELAY_MS);
+}
+
 export function createBridge(options: BridgeOptions): Bridge {
   const adapter = options.adapter;
-  const defaultTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const defaultTimeoutMs = timeoutOr(options.timeoutMs, DEFAULT_TIMEOUT_MS);
 
   const pending = new Map<string, PendingEntry>();
   const events = new Map<string, Set<ListenerEntry>>();
@@ -130,7 +178,25 @@ export function createBridge(options: BridgeOptions): Bridge {
         return;
       }
       case "event": {
-        const set = events.get(envelope.event);
+        // Read `event` and `payload` exactly once, up front, inside a guard.
+        // Both may be getters on an in-process envelope (mock/flutter
+        // `receive()`, a custom adapter): isValidEnvelope already read
+        // `event` once to validate it, so this is a second access, and a
+        // value-varying or throwing getter must not (a) throw out of the
+        // adapter's dispatch loop and starve every later subscriber it was
+        // iterating, or (b) hand different listeners in the fan-out below
+        // different payload values (aibridgejs-11).
+        let eventName: unknown;
+        let eventPayload: unknown;
+        try {
+          eventName = envelope.event;
+          eventPayload = envelope.payload;
+        } catch {
+          return;
+        }
+        if (typeof eventName !== "string") return;
+
+        const set = events.get(eventName);
         if (!set) return;
         // Listener-error swallow strategy (FAM-S-07): each subscriber is invoked
         // inside its own try/catch and any throw is intentionally discarded.
@@ -141,11 +207,18 @@ export function createBridge(options: BridgeOptions): Bridge {
         // unhandled error). The bridge deliberately does NOT expose these
         // errors: there is no onError hook in the 0.x stable surface. Consumers
         // that need visibility must wrap their own listener body in try/catch.
-        // This also means a throwing `envelope.payload` getter degrades to "no
-        // listener sees this event" rather than a crash or hang.
+        // BRG-R-05: stop the fan-out the instant dispose() runs (a listener
+        // that calls bridge.dispose() must not let later siblings, including
+        // `once` listeners, run after teardown), and skip any entry whose
+        // `removed` flag a listener already flipped this same cycle (dispose,
+        // reset, its own unsubscribe(), or a sibling's signal abort). See the
+        // ListenerEntry.removed doc comment above for why membership in
+        // `set` alone cannot detect this after reset().
         for (const listenerEntry of Array.from(set)) {
+          if (disposed) break;
+          if (listenerEntry.removed) continue;
           try {
-            listenerEntry.fn(envelope.payload);
+            listenerEntry.fn(eventPayload);
           } catch {
             // See the strategy note above — swallow by design.
           }
@@ -254,7 +327,7 @@ export function createBridge(options: BridgeOptions): Bridge {
     if (signal?.aborted) throw signal.reason;
 
     const id = generateId();
-    const callTimeoutMs = opts?.timeoutMs ?? defaultTimeoutMs;
+    const callDelayMs = timerDelay(timeoutOr(opts?.timeoutMs, defaultTimeoutMs));
 
     return new Promise<T>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -290,14 +363,15 @@ export function createBridge(options: BridgeOptions): Bridge {
       // contract (see README "createBridge" / "call"): pass 0 only when you
       // supply your own AbortSignal-based deadline, otherwise a silent host
       // leaves the entry pinned. The default path (10 s) remains bounded.
-      if (callTimeoutMs > 0) {
+      // Infinity likewise arms no timer; see timerDelay().
+      if (callDelayMs !== undefined) {
         timer = setTimeout(() => {
           const current = pending.get(id);
           if (!current) return;
           pending.delete(id);
           current.cleanup();
           reject(new BridgeTimeoutError(`Call timeout: ${method}`));
-        }, callTimeoutMs);
+        }, callDelayMs);
       }
 
       if (signal) {
@@ -319,7 +393,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         timestamp: now(),
       };
 
-      adapter.post(envelope).catch((err: unknown) => {
+      safePost(adapter, envelope).catch((err: unknown) => {
         const current = pending.get(id);
         if (!current) return;
         pending.delete(id);
@@ -331,14 +405,54 @@ export function createBridge(options: BridgeOptions): Bridge {
 
   async function emit(event: string, payload?: unknown, opts?: EmitOptions): Promise<void> {
     throwIfDisposed();
-    const signal = opts?.signal;
-    if (signal?.aborted) {
-      throw signal.reason;
+    const userSignal = opts?.signal;
+    if (userSignal?.aborted) {
+      throw userSignal.reason;
     }
 
+    // EmitOptions.timeoutMs bounds the readiness wait AND adapter.post(), so
+    // the deadline is armed BEFORE awaiting ready(). It is expressed as an
+    // internal abort signal (merged with the caller's, if any) so readiness and
+    // post() both race one signal. A non-positive timeout (<= 0) DISABLES the
+    // timer, mirroring call()'s BRG-R-02 contract; only a positive value arms
+    // it (Infinity / NaN arm none either; see timerDelay()). `disarm` clears
+    // the timer and detaches the forwarding listener on EVERY settle path (the
+    // finally below), so nothing fires late.
+    const emitDelayMs = opts?.timeoutMs === undefined ? undefined : timerDelay(opts.timeoutMs);
+    let signal = userSignal;
+    let disarm: (() => void) | undefined;
+    if (emitDelayMs !== undefined) {
+      const deadline = new AbortController();
+      const timer = setTimeout(() => {
+        deadline.abort(new BridgeTimeoutError(`Emit timeout: ${event}`));
+      }, emitDelayMs);
+      const forwardAbort = (): void => {
+        deadline.abort(userSignal!.reason);
+      };
+      userSignal?.addEventListener("abort", forwardAbort, { once: true });
+      disarm = (): void => {
+        clearTimeout(timer);
+        userSignal?.removeEventListener("abort", forwardAbort);
+      };
+      signal = deadline.signal;
+    }
+
+    try {
+      await postEvent(event, payload, signal);
+    } finally {
+      disarm?.();
+    }
+  }
+
+  async function postEvent(
+    event: string,
+    payload: unknown,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
     const capturedEpoch = resetEpoch;
     // Thread the signal through readiness so a hung adapter.ready() can be
-    // unstuck by this single emit's abort, not only by reset()/dispose().
+    // unstuck by this single emit's abort or deadline, not only by
+    // reset()/dispose().
     await (signal !== undefined ? ready({ signal }) : ready());
 
     if (disposed) throw new BridgeDisposedError();
@@ -355,33 +469,27 @@ export function createBridge(options: BridgeOptions): Bridge {
     // emit() registers no pending-map entry (it is fire-and-forget, with no
     // response to correlate). The only thing still in flight after readiness is
     // adapter.post(), which on some transports (e.g. a Flutter callHandler that
-    // never settles) can hang. We therefore race post() against an OPTIONAL
-    // per-call timeout and the caller's abort signal, mirroring call()'s
-    // cancellation semantics. Both the timer and the abort listener are torn
+    // never settles) can hang. We therefore race post() against the signal
+    // (the caller's abort and/or the per-call deadline armed in emit()),
+    // mirroring call()'s cancellation semantics. The abort listener is torn
     // down on EVERY settle path so a successful (or already-rejected) emit
-    // leaves no orphaned timer firing later and no listener pinned on the
-    // signal — the same teardown discipline call()'s cleanup() enforces.
-    const emitTimeoutMs = opts?.timeoutMs;
+    // leaves no listener pinned on the signal — the same teardown discipline
+    // call()'s cleanup() enforces.
 
     // Fast path: no per-call timeout and no signal → behave exactly as the
     // pre-cancellation emit did (a bare awaited post()). Keeps the additive
     // change a strict superset and avoids wrapping cost on the common call.
-    if ((emitTimeoutMs === undefined || emitTimeoutMs <= 0) && signal === undefined) {
+    if (signal === undefined) {
       await adapter.post(envelope);
       return;
     }
 
     await new Promise<void>((resolve, reject) => {
-      let timer: ReturnType<typeof setTimeout> | undefined;
       let abortHandler: (() => void) | undefined;
       let settled = false;
 
       const cleanup = (): void => {
-        if (timer !== undefined) {
-          clearTimeout(timer);
-          timer = undefined;
-        }
-        if (signal && abortHandler) {
+        if (abortHandler) {
           signal.removeEventListener("abort", abortHandler);
           abortHandler = undefined;
         }
@@ -400,22 +508,12 @@ export function createBridge(options: BridgeOptions): Bridge {
         reject(reason);
       };
 
-      // A non-positive timeout (<= 0) DISABLES the timer, mirroring call()'s
-      // BRG-R-02 contract; only a positive value arms it.
-      if (emitTimeoutMs !== undefined && emitTimeoutMs > 0) {
-        timer = setTimeout(() => {
-          settleReject(new BridgeTimeoutError(`Emit timeout: ${event}`));
-        }, emitTimeoutMs);
-      }
+      abortHandler = (): void => {
+        settleReject(signal.reason);
+      };
+      signal.addEventListener("abort", abortHandler, { once: true });
 
-      if (signal) {
-        abortHandler = (): void => {
-          settleReject(signal.reason);
-        };
-        signal.addEventListener("abort", abortHandler, { once: true });
-      }
-
-      adapter.post(envelope).then(settleResolve, settleReject);
+      safePost(adapter, envelope).then(settleResolve, settleReject);
     });
   }
 
@@ -435,13 +533,12 @@ export function createBridge(options: BridgeOptions): Bridge {
     const signal = opts?.signal;
     const once = opts?.once === true;
 
-    let removed = false;
     // biome-ignore lint/style/useConst: hoisted so the unsubscribe closure can reference entry by identity
     let entry!: ListenerEntry;
 
     const unsubscribe = (): void => {
-      if (removed) return;
-      removed = true;
+      if (entry.removed) return;
+      entry.removed = true;
       const s = events.get(event);
       if (s) {
         s.delete(entry);
@@ -457,7 +554,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         }
       : (listener as BridgeListener<unknown>);
 
-    entry = { fn: wrapped, unsubscribe };
+    entry = { fn: wrapped, unsubscribe, removed: false };
     set.add(entry);
 
     if (signal) {

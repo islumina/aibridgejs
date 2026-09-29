@@ -120,6 +120,101 @@ describe("aibridgejs core gates", () => {
     expect(settled).toBe(true);
   });
 
+  // timeoutMs range normalisation. setTimeout stores its delay as a signed
+  // 32-bit int, so Infinity or anything above 2**31-1 used to overflow and fire
+  // after ~1 ms (Node TimeoutOverflowWarning; browsers treat it as 0), and NaN
+  // failed both `> 0` and `<= 0`, silently disabling the default timer.
+  // Real timers here: the overflow is a host-timer behaviour fake timers do not
+  // reproduce faithfully.
+  const settleState = (p: Promise<unknown>): { value: unknown; done: Promise<void> } => {
+    const state: { value: unknown; done: Promise<void> } = {
+      value: null,
+      done: Promise.resolve(),
+    };
+    state.done = p.then(
+      () => {
+        state.value = "resolved";
+      },
+      (err: unknown) => {
+        state.value = err;
+      },
+    );
+    return state;
+  };
+  const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+  test("T1: call() timeoutMs: Infinity arms no timer instead of firing after ~1 ms", async () => {
+    const bridge = createBridge({ adapter: createMockAdapter() });
+    const state = settleState(bridge.call("x", undefined, { timeoutMs: Number.POSITIVE_INFINITY }));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+    expect(state.value).toBeInstanceOf(BridgeDisposedError);
+  });
+
+  test("T2: call() timeoutMs above 2**31-1 is clamped instead of overflowing to ~1 ms", async () => {
+    const bridge = createBridge({ adapter: createMockAdapter() });
+    const state = settleState(bridge.call("x", undefined, { timeoutMs: 2 ** 31 }));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+    expect(state.value).toBeInstanceOf(BridgeDisposedError);
+  });
+
+  test("T3: createBridge({ timeoutMs: Infinity }) does not fail every call immediately", async () => {
+    const bridge = createBridge({
+      adapter: createMockAdapter(),
+      timeoutMs: Number.POSITIVE_INFINITY,
+    });
+    const state = settleState(bridge.call("x"));
+    await wait(50);
+    expect(state.value).toBeNull();
+    bridge.dispose();
+    await state.done;
+  });
+
+  test("T4: emit() timeoutMs: Infinity does not reject before post() settles", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = () => new Promise<void>(() => {}); // hangs
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    const state = settleState(
+      bridge.emit("e", undefined, {
+        timeoutMs: Number.POSITIVE_INFINITY,
+        signal: controller.signal,
+      }),
+    );
+    await wait(50);
+    expect(state.value).toBeNull();
+    const reason = new Error("cancel");
+    controller.abort(reason);
+    await state.done;
+    expect(state.value).toBe(reason);
+    bridge.dispose();
+  });
+
+  test("T5: a NaN timeoutMs falls back to the default instead of disabling the timer", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter, timeoutMs: Number("abc") });
+    const fromDefault = settleState(bridge.call("x"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await fromDefault.done;
+    expect(fromDefault.value).toBeInstanceOf(BridgeTimeoutError);
+
+    const bridge2 = createBridge({ adapter: createMockAdapter(), timeoutMs: 1000 });
+    const perCall = settleState(bridge2.call("y", undefined, { timeoutMs: Number.NaN }));
+    await vi.advanceTimersByTimeAsync(1000);
+    await perCall.done;
+    expect(perCall.value).toBeInstanceOf(BridgeTimeoutError);
+    bridge.dispose();
+    bridge2.dispose();
+  });
+
   test("gate 4: abort rejects and clears pending entry", async () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
@@ -409,6 +504,64 @@ describe("aibridgejs additional correctness", () => {
     adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
     expect(outerCalls).toBe(2);
     expect(innerCalls).toBe(1);
+  });
+
+  test("A8b: dispose() from a listener stops fan-out for later siblings, including once", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    const spyC = vi.fn();
+    bridge.on("e", () => bridge.dispose());
+    bridge.on("e", spyB);
+    bridge.on("e", spyC, { once: true });
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+
+    expect(spyB).not.toHaveBeenCalled();
+    expect(spyC).not.toHaveBeenCalled();
+  });
+
+  test("A8c: a sibling unsubscribe() during dispatch skips that sibling this cycle", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    // biome-ignore lint/style/useConst: hoisted so the listener closure can reference it before assignment
+    let off: (() => void) | undefined;
+    bridge.on("e", () => off?.());
+    off = bridge.on("e", spyB);
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+
+    // The listener is truly gone, not just skipped once.
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("A8d: a sibling's signal abort during dispatch skips that sibling this cycle", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    const ctrl = new AbortController();
+    bridge.on("e", () => ctrl.abort());
+    bridge.on("e", spyB, { signal: ctrl.signal });
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("A8e: reset() from a listener stops fan-out for later siblings", async () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spyB = vi.fn();
+    bridge.on("e", () => bridge.reset());
+    bridge.on("e", spyB);
+
+    adapter.receive({ kind: "event", event: "e", timestamp: Date.now() });
+    expect(spyB).not.toHaveBeenCalled();
+    bridge.dispose();
   });
 
   test("A9: response ok:false rejects with BridgeRemoteError carrying code/message/detail", async () => {
@@ -900,6 +1053,54 @@ describe("aibridgejs additional correctness", () => {
     bridge.dispose();
   });
 
+  test("E6: emit() timeoutMs also bounds a hung readiness wait (EmitOptions.timeoutMs contract)", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.ready = () => new Promise<void>(() => {}); // never readies
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+
+    let settled: unknown = null;
+    const pending = bridge.emit("e", undefined, { timeoutMs: 100 }).then(
+      () => {
+        settled = "resolved";
+      },
+      (err: unknown) => {
+        settled = err;
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(postSpy).not.toHaveBeenCalled();
+    expect(settled).toBeInstanceOf(BridgeTimeoutError);
+    expect((settled as Error).message).toBe("Emit timeout: e");
+    bridge.dispose();
+    await pending;
+  });
+
+  test("E6b: emit() timeoutMs + signal during readiness — abort still wins and nothing is left armed", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.ready = () => new Promise<void>(() => {}); // never readies
+    const postSpy = vi.spyOn(adapter, "post");
+    const bridge = createBridge({ adapter });
+    const controller = new AbortController();
+    const addSpy = vi.spyOn(controller.signal, "addEventListener");
+    const removeSpy = vi.spyOn(controller.signal, "removeEventListener");
+
+    const pending = bridge.emit("e", undefined, { timeoutMs: 1000, signal: controller.signal });
+    const reason = new Error("aborted during ready");
+    const assertion = expect(pending).rejects.toBe(reason);
+    controller.abort(reason);
+    await assertion;
+
+    // Deadline timer cleared and the caller's signal listener detached on settle.
+    expect(vi.getTimerCount()).toBe(0);
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    expect(postSpy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
   test("call/emit reject and on/reset throw synchronously after dispose", async () => {
     const adapter = createMockAdapter();
     const bridge = createBridge({ adapter });
@@ -908,6 +1109,21 @@ describe("aibridgejs additional correctness", () => {
     await expect(bridge.emit("x")).rejects.toBeInstanceOf(BridgeDisposedError);
     expect(() => bridge.on("x", () => {})).toThrow(BridgeDisposedError);
     expect(() => bridge.reset()).toThrow(BridgeDisposedError);
+  });
+
+  test("aibridgejs-12: ready() throws BridgeDisposedError synchronously after dispose, unlike call()/emit()", () => {
+    // Unlike call() and emit(), which are `async function`s (so a throw
+    // inside them is automatically turned into a rejected promise), ready()
+    // is a plain function that calls throwIfDisposed() before returning any
+    // promise at all. Code written as `bridge.ready().then(...).catch(...)`
+    // therefore throws before `.catch` is ever attached, instead of being
+    // caught by it. This is documented in README/STABILITY alongside
+    // platform() (which has the same synchronous-throw shape and is already
+    // covered by its own test above).
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    bridge.dispose();
+    expect(() => bridge.ready()).toThrow(BridgeDisposedError);
   });
 
   test("ready rejects when bridge is disposed mid-flight", async () => {
@@ -1067,6 +1283,132 @@ describe("aibridgejs additional correctness", () => {
     await expect(bridge.call("x")).rejects.toThrow("transport down");
     // Restore so dispose doesn't blow up.
     adapter.post = original;
+    bridge.dispose();
+  });
+
+  test("call(): a synchronously throwing adapter.post() rejects and cleans up (no leaked abort listener)", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter, timeoutMs: 0 });
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    await expect(bridge.call("x", undefined, { signal: ctrl.signal })).rejects.toThrow(
+      "sync post failure",
+    );
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    bridge.dispose();
+  });
+
+  test("call(): default timeout does not leak a timer when adapter.post() throws synchronously", async () => {
+    vi.useFakeTimers();
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter });
+
+    await expect(bridge.call("x")).rejects.toThrow("sync post failure");
+    expect(vi.getTimerCount()).toBe(0);
+    bridge.dispose();
+  });
+
+  test("call(): adapter.post() returning a non-promise does not synchronously throw a TypeError", async () => {
+    let sent: unknown;
+    const adapter = createMockAdapter();
+    adapter.post = ((message: unknown) => {
+      sent = message;
+      return undefined as unknown as Promise<void>;
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter, timeoutMs: 0 });
+
+    let err: unknown = "not-settled";
+    const ctrl = new AbortController();
+    const pending = bridge.call("x", undefined, { signal: ctrl.signal }).catch((e: unknown) => {
+      err = e;
+    });
+    // Let readiness settle and the safePost() microtask chain run, without
+    // settling via a real response.
+    await new Promise((r) => setTimeout(r, 0));
+    expect((sent as { kind?: string } | undefined)?.kind).toBe("request");
+    // The call is still pending (post() "succeeded", just sent nothing back),
+    // not synchronously rejected with a TypeError from calling `.catch` on
+    // a non-promise.
+    expect(err).toBe("not-settled");
+    ctrl.abort(new Error("cleanup"));
+    await pending;
+    bridge.dispose();
+  });
+
+  test("emit() slow path: a synchronously throwing adapter.post() rejects and detaches the abort listener", async () => {
+    const adapter = createMockAdapter();
+    adapter.post = (() => {
+      throw new Error("sync post failure");
+    }) as typeof adapter.post;
+    const bridge = createBridge({ adapter });
+    const ctrl = new AbortController();
+    const addSpy = vi.spyOn(ctrl.signal, "addEventListener");
+    const removeSpy = vi.spyOn(ctrl.signal, "removeEventListener");
+
+    await expect(bridge.emit("e", undefined, { signal: ctrl.signal })).rejects.toThrow(
+      "sync post failure",
+    );
+    expect(removeSpy).toHaveBeenCalledTimes(addSpy.mock.calls.length);
+    bridge.dispose();
+  });
+
+  test("event dispatch: an `event` getter that throws on a later read does not escape the dispatch loop", () => {
+    // `event` is validated twice before the bridge's own event-case runs
+    // (once by the mock adapter's dispatch, once by the bridge's inbound
+    // subscriber). Return a valid value for those two reads and only throw
+    // on a further read, so this exercises the bridge's own guard around
+    // `envelope.event` rather than just isValidEnvelope's.
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const spy = vi.fn();
+    bridge.on("e", spy);
+
+    let reads = 0;
+    const envelope = {
+      kind: "event",
+      timestamp: Date.now(),
+      get event(): string {
+        reads++;
+        if (reads <= 2) return "e";
+        throw new Error("getter boom");
+      },
+    };
+
+    expect(() => adapter.receive(envelope as never)).not.toThrow();
+    expect(spy).not.toHaveBeenCalled();
+    bridge.dispose();
+  });
+
+  test("event dispatch: reads `payload` once, so every listener in the fan-out sees the same value", () => {
+    const adapter = createMockAdapter();
+    const bridge = createBridge({ adapter });
+    const seen: unknown[] = [];
+    bridge.on("e", (p) => seen.push(p));
+    bridge.on("e", (p) => seen.push(p));
+    bridge.on("e", (p) => seen.push(p));
+
+    let reads = 0;
+    const envelope = {
+      kind: "event",
+      event: "e",
+      timestamp: Date.now(),
+      get payload(): number {
+        reads++;
+        return reads;
+      },
+    };
+
+    adapter.receive(envelope as never);
+    expect(seen).toEqual([1, 1, 1]);
+    expect(reads).toBe(1);
     bridge.dispose();
   });
 });

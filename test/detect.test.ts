@@ -93,4 +93,31 @@ describe("detectBridgeAdapter", () => {
     };
     expect(detectBridgeAdapter(host as never).platform).toBe("flutter");
   });
+
+  test("aibridgejs-13: an iframe-shaped host WITHOUT addEventListener throws a descriptive error, not a raw TypeError", () => {
+    // Mirrors BRG-B-01: createIframeAdapter unconditionally calls
+    // host.addEventListener/removeEventListener, but DetectHost marks them
+    // optional. Unlike the flutter branch, the iframe branch was not
+    // feature-checked, so a host with a distinct `parent` but no listener
+    // methods crashed inside createIframeAdapter with a raw TypeError instead
+    // of a descriptive error.
+    const host = {
+      parent: { postMessage: vi.fn() },
+      // No addEventListener / removeEventListener.
+    };
+    expect(() =>
+      detectBridgeAdapter(host as never, { iframe: { targetOrigin: "https://a.example" } }),
+    ).toThrow(/addEventListener/);
+  });
+
+  test("aibridgejs-13: an iframe host WITH addEventListener is still selected (happy path intact)", () => {
+    const host = {
+      ...fakeListener(),
+      parent: { postMessage: vi.fn() },
+    };
+    const adapter = detectBridgeAdapter(host as never, {
+      iframe: { targetOrigin: "https://a.example" },
+    });
+    expect(adapter.platform).toBe("iframe");
+  });
 });

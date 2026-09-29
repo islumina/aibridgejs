@@ -75,6 +75,7 @@ await bridge.emit("analytics/event", { name: "opened" });
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
+- After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously rather than rejecting — unlike `call()`/`emit()`, which reject. Code that assumes `bridge.ready().then(...).catch(...)` will crash the caller if the bridge is already disposed.
 
 ## AI Context
 
@@ -115,6 +116,7 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 - `reset()` rejects pending calls and refreshes the adapter subscription without disposing the adapter.
 - `dispose()` is idempotent and permanent.
+- After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously; `call()` and `emit()` (both `async` functions) reject with it instead.
 
 ## Boundaries
 
@@ -132,6 +134,15 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 All notable changes to aibridgejs are summarized here. Older release detail was condensed after the 2026-06-10 review wave.
 
 ## [Unreleased]
+
+- Fixed: `emit()`'s `timeoutMs` now also bounds the readiness wait, not just the post-readiness phase, matching the documented `EmitOptions.timeoutMs` contract.
+- Fixed: the Flutter adapter now feature-checks whether the platform is already ready at construction, so a bridge created after the one-shot `flutterInAppWebViewPlatformReady` event no longer waits forever.
+- Fixed: `timeoutMs` (the `createBridge` default, per-call, and per-emit) is normalized before arming a timer — non-finite values (e.g. `Infinity`) and values above the 32-bit timer limit no longer fire almost immediately, and `NaN` falls back to the default instead of silently disabling the timer.
+- Fixed: package.json `exports` now resolve `.d.cts` types under the `require` condition for every subpath, so CommonJS consumers on `node16`/`nodenext` module resolution can typecheck against the package.
+- Fixed: the event fan-out loop no longer invokes listeners removed during the same dispatch cycle, via `dispose()`, `reset()`, their own `unsubscribe()`, or a sibling's signal abort.
+- Fixed: `adapter.post()` is now called through a safe wrapper in `call()` and `emit()`, so a custom adapter that throws synchronously or returns a non-promise no longer leaks the pending entry's timer and abort listener.
+- Fixed: `isValidEnvelope()` and the event dispatch path now read each envelope field exactly once inside a guard, so a throwing or value-varying getter on an in-process envelope can no longer escape into the adapter's dispatch loop or hand different listeners different payload values.
+- Fixed: `detectBridgeAdapter()` now feature-checks the iframe branch the same way it already does for Flutter, so a host with a `parent` but no `addEventListener`/`removeEventListener` gets a descriptive error instead of a raw `TypeError`.
 
 ## [0.5.9] - 2026-06-29
 

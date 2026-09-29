@@ -21,6 +21,7 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 - `reset()` rejects pending calls and refreshes the adapter subscription without disposing the adapter.
 - `dispose()` is idempotent and permanent.
+- After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously; `call()` and `emit()` (both `async` functions) reject with it instead.
 
 ## Boundaries
 
