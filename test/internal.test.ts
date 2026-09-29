@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { generateId, isValidEnvelope } from "../src/internal.js";
+import { generateId } from "../src/id.js";
+import { isValidEnvelope } from "../src/internal.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();

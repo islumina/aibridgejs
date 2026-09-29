@@ -1,5 +1,5 @@
 import { BridgeDisposedError } from "../errors.js";
-import { isValidEnvelope } from "../internal.js";
+import { assertHost, invalid, isObject, isValidEnvelope } from "../internal.js";
 import type { BridgeAdapter, BridgeEnvelope, SubscribeMeta } from "../types.js";
 
 export interface FlutterInAppWebView {
@@ -39,6 +39,8 @@ export function createFlutterAdapter(
   host: FlutterHost,
   options: FlutterAdapterOptions = {},
 ): FlutterAdapter {
+  assertHost(host);
+  if (!isObject(options)) invalid("options", "an object");
   const handlerName = options.handlerName ?? DEFAULT_HANDLER_NAME;
   const waitForReady = options.waitForReadyEvent ?? true;
   const readyEventName = options.readyEventName ?? DEFAULT_READY_EVENT;

@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { detectBridgeAdapter } from "../src/detect/index.js";
+import { BridgeError } from "../src/errors.js";
 import {
   type FlutterHost,
   type FlutterInAppWebView,
@@ -299,6 +300,25 @@ describe("aibridgejs flutter adapter", () => {
     const adapter = createFlutterAdapter(host, { waitForReadyEvent: false });
     adapter.dispose();
     expect(() => adapter.subscribe(() => {})()).not.toThrow();
+  });
+
+  test("a host without addEventListener/removeEventListener throws BridgeError before any side effect", () => {
+    const message =
+      /^aibridgejs: host must be an object with addEventListener and removeEventListener functions$/;
+    for (const bad of [undefined, null, {}, { addEventListener: vi.fn() }]) {
+      expect(() => createFlutterAdapter(bad as never)).toThrow(BridgeError);
+      expect(() => createFlutterAdapter(bad as never)).toThrow(message);
+    }
+  });
+
+  test("a non-object options argument throws BridgeError, not a TypeError", () => {
+    const host = createHost({ callHandler: vi.fn() });
+    const addSpy = vi.spyOn(host, "addEventListener");
+    expect(() => createFlutterAdapter(host, null as never)).toThrow(BridgeError);
+    expect(() => createFlutterAdapter(host, 42 as never)).toThrow(
+      /^aibridgejs: options must be an object$/,
+    );
+    expect(addSpy).not.toHaveBeenCalled();
   });
 
   test("platform is 'flutter'", () => {

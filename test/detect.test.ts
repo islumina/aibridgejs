@@ -1,5 +1,6 @@
 import { describe, expect, test, vi } from "vitest";
 import { detectBridgeAdapter } from "../src/detect/index.js";
+import { BridgeError } from "../src/errors.js";
 
 function fakeListener(): {
   addEventListener: ReturnType<typeof vi.fn>;
@@ -37,7 +38,10 @@ describe("detectBridgeAdapter", () => {
       ...fakeListener(),
       parent: { postMessage: vi.fn() },
     };
-    expect(() => detectBridgeAdapter(host as never)).toThrow(/targetOrigin/);
+    expect(() => detectBridgeAdapter(host as never)).toThrow(BridgeError);
+    expect(() => detectBridgeAdapter(host as never)).toThrow(
+      /^aibridgejs: targetOrigin must be an exact origin/,
+    );
   });
 
   test("A17d: throws when iframe is detected but targetOrigin is empty string", () => {
@@ -45,7 +49,9 @@ describe("detectBridgeAdapter", () => {
       ...fakeListener(),
       parent: { postMessage: vi.fn() },
     };
-    expect(() => detectBridgeAdapter(host as never, { iframe: { targetOrigin: "" } })).toThrow();
+    expect(() => detectBridgeAdapter(host as never, { iframe: { targetOrigin: "" } })).toThrow(
+      BridgeError,
+    );
   });
 
   test("A17e: falls back to mock when no host signals are present", () => {
@@ -107,7 +113,17 @@ describe("detectBridgeAdapter", () => {
     };
     expect(() =>
       detectBridgeAdapter(host as never, { iframe: { targetOrigin: "https://a.example" } }),
-    ).toThrow(/addEventListener/);
+    ).toThrow(BridgeError);
+    expect(() =>
+      detectBridgeAdapter(host as never, { iframe: { targetOrigin: "https://a.example" } }),
+    ).toThrow(/^aibridgejs: host must be an object with addEventListener/);
+  });
+
+  test("a non-object options argument throws BridgeError, not a TypeError", () => {
+    expect(() => detectBridgeAdapter({} as never, null as never)).toThrow(BridgeError);
+    expect(() => detectBridgeAdapter({} as never, null as never)).toThrow(
+      /^aibridgejs: options must be an object$/,
+    );
   });
 
   test("aibridgejs-13: an iframe host WITH addEventListener is still selected (happy path intact)", () => {
