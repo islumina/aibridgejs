@@ -14,7 +14,7 @@ The short index lives at `llms.txt` (see https://llmstxt.org/).
 
 Transport-agnostic bridge core for iframe, Flutter InAppWebView, and in-memory mock runtimes. It moves JSON-safe request/response/event envelopes across an adapter while keeping host coupling outside the core.
 
-> **Status: 0.5.9 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
+> **Status: 0.6.0 - stable 1.0-track core.** Root, mock, iframe, flutter, and detect subpaths are shipped.
 
 ## Install
 
@@ -50,12 +50,12 @@ await bridge.emit("analytics/event", { name: "opened" });
 
 - `createBridge({ adapter, timeoutMs? })` creates a bridge around one adapter.
 - `bridge.ready({ signal }?)` waits for adapter readiness.
-- `bridge.call<T>(method, payload?, { timeoutMs, signal }?)` sends a request and resolves with the remote response payload.
+- `bridge.call<T>(method, payload?, { timeoutMs, signal }?)` sends a request and resolves with the remote response payload. `timeoutMs` (default 10 s) is measured from `call()` entry and covers the readiness wait, `adapter.post()` and the response wait.
 - `bridge.emit(event, payload?, { signal, timeoutMs }?)` sends a fire-and-forget event after readiness; the optional `signal` / `timeoutMs` cancel or time-bound a single emit.
-- `bridge.on<T>(event, listener, { signal, once }?)` subscribes to inbound events.
+- `bridge.on<T>(event, listener, { signal, once }?)` subscribes to inbound events; `listener` must be a function.
 - `bridge.platform()` returns `"iframe"`, `"flutter"`, `"mock"`, or `"unknown"`.
-- `bridge.reset()` rejects pending calls and resubscribes to adapter messages.
-- `bridge.dispose()` is idempotent permanent teardown.
+- `bridge.reset()` rejects pending `call()`s and in-flight `emit()`s with `BridgeResetError`, cancels the current readiness round, and forgets cached readiness so the next `ready()`/`call()`/`emit()` re-awaits `adapter.ready()`. Registered `on()` listeners and the adapter subscription are untouched; only `dispose()` removes them.
+- `bridge.dispose()` is idempotent, permanent teardown: in-flight `call()`s and `emit()`s reject with `BridgeDisposedError` and every listener is removed.
 
 ## Adapters
 
@@ -66,14 +66,18 @@ await bridge.emit("analytics/event", { name: "opened" });
 | `aibridgejs/flutter` | Flutter InAppWebView | Uses `window.flutter_inappwebview.callHandler`; readiness is feature-checked. |
 | `aibridgejs/detect` | Host selection | Chooses flutter/iframe/mock based on host capabilities. |
 
+Custom adapters implement `ready`, `post`, `subscribe` and `dispose`. The signal passed to `ready()` is per readiness round; it aborts on `reset()` (reason `BridgeResetError`) and `dispose()` (reason `BridgeDisposedError`); adapters must detach their listeners on abort.
+
 ## Sharp Edges
 
 - Payloads must be JSON-safe. The bridge does not validate cloneability or schema; validate at app boundaries.
-- `call()` and `emit()` both support per-call `signal` and `timeoutMs`. For `emit()` these are opt-in: omitted, it stays fire-and-forget (waits for readiness and adapter `post()` with no time bound).
-- `timeoutMs <= 0` disables the call timer. Pair this with an `AbortSignal` if the remote side may hang.
-- `reset()` rejects all pending calls with `BridgeResetError`; listeners stay registered on the new subscription.
+- `call()` and `emit()` both support per-call `signal` and `timeoutMs`. For `emit()` these are opt-in: omitted, it is unbounded but reclaimable (it waits for readiness and adapter `post()` with no time bound; only `reset()` or `dispose()` settle it early).
+- `timeoutMs <= 0` or `Infinity` disables the timer, `NaN` falls back to the default, and values above 2,147,483,647 are clamped to it. Pair a disabled timer with an `AbortSignal` if the remote side may hang.
+- `reset()` rejects pending `call()`s and in-flight `emit()`s with `BridgeResetError`; registered `on()` listeners and the adapter subscription are untouched, and only `dispose()` removes them.
+- A rejected `adapter.ready()` is cached: later `ready()`/`call()`/`emit()` reject with the same error until `reset()` starts a new readiness round.
 - iframe security depends on exact origin allowlisting. Pass `expectedSource` whenever same-origin pages share the channel.
 - Flutter readiness failures are adapter-level errors; keep native handler names stable across app releases.
+- Misuse throws `BridgeError` with an `aibridgejs: ` message prefix before any side effect: a missing options object, an adapter or host missing required methods, a non-function listener, or an iframe `targetOrigin` that is not an exact origin.
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
 - After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously rather than rejecting — unlike `call()`/`emit()`, which reject. Code that assumes `bridge.ready().then(...).catch(...)` will crash the caller if the bridge is already disposed.
 
@@ -110,13 +114,19 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 ## Behavioral Contract
 
 - `call()` creates a request envelope, waits for readiness, posts through the adapter, and resolves/rejects from matching response envelopes.
-- `call()` accepts `signal` and `timeoutMs`; timeout creates `BridgeTimeoutError`, reset creates `BridgeResetError`, dispose creates `BridgeDisposedError`.
-- `emit()` is fire-and-forget but still waits for readiness and adapter `post()`; it accepts optional per-call `signal` and `timeoutMs` (opt-in; omitted preserves the unbounded fire-and-forget contract).
+- `call()` accepts `signal` and `timeoutMs`. `timeoutMs` (default 10 s) is measured from `call()` entry and covers the readiness wait, `adapter.post()` and the response wait. Timeout creates `BridgeTimeoutError`, reset creates `BridgeResetError`, dispose creates `BridgeDisposedError`, and a `signal` abort rejects with its reason; whichever settles first wins.
+- `emit()` waits for readiness and adapter `post()`; it accepts optional per-call `signal` and `timeoutMs` (a `timeoutMs` deadline is measured from `emit()` entry). Without them an emit is unbounded but reclaimable: `reset()` rejects it with `BridgeResetError` and `dispose()` with `BridgeDisposedError`.
+- `timeoutMs` (on `createBridge`, `call()` and `emit()`): `undefined` or `NaN` takes the default (10 s for calls, no timer for emits); `<= 0` or `Infinity` arms no timer; finite values above 2,147,483,647 are clamped to it.
+- `call()`s and `emit()`s made before readiness post in the order they were made, whatever options they pass.
 - `on()` supports `signal` and `once`; listener identity is managed by the bridge.
+- Inbound event fan-out follows the ai*js re-entrancy rule for pure fan-out emitters: dispatch is synchronous and depth-first, so a nested dispatch from inside a listener runs to completion before the outer dispatch resumes; the outer dispatch keeps iterating its pre-taken snapshot and skips listeners removed meanwhile; `once` listeners go inert before their first invocation; nested dispatch is never rejected or queued.
 - Event-listener throws are isolated and discarded by design — one misbehaving listener cannot abort fan-out to its siblings. Wrap your own handler body in `try/catch` if you need to observe errors.
-- `reset()` rejects pending calls and refreshes the adapter subscription without disposing the adapter.
-- `dispose()` is idempotent and permanent.
+- `reset()` rejects pending `call()`s and in-flight `emit()`s with `BridgeResetError`, cancels the current readiness round, and forgets cached readiness so the next `ready()`/`call()`/`emit()` re-awaits `adapter.ready()`. Registered `on()` listeners and the adapter subscription are untouched; only `dispose()` removes them.
+- A rejected `adapter.ready()` is cached: later `ready()`/`call()`/`emit()` reject with the same error until `reset()` starts a new readiness round.
+- The signal passed to `adapter.ready()` is per readiness round; it aborts on `reset()` (reason `BridgeResetError`) and `dispose()` (reason `BridgeDisposedError`). Adapters must detach their listeners on abort.
+- `dispose()` is idempotent and permanent: in-flight `call()`s and `emit()`s reject with `BridgeDisposedError` and every listener is removed.
 - After `dispose()`, `ready()`, `platform()`, `on()`, and `reset()` throw `BridgeDisposedError` synchronously; `call()` and `emit()` (both `async` functions) reject with it instead.
+- Argument misuse throws `BridgeError` (message `aibridgejs: <subject> must be <constraint>`) before any side effect: `createBridge()` without an options object or without an adapter exposing `ready`, `post`, `subscribe` and `dispose` functions; `on()` with a non-function listener; `createIframeAdapter()`/`createFlutterAdapter()` with a host lacking `addEventListener`/`removeEventListener`; a non-object options argument to the Flutter factory or `detectBridgeAdapter()`; an iframe `targetOrigin` that is missing, `"*"`, or not an exact origin.
 
 ## Boundaries
 
@@ -133,8 +143,20 @@ aibridgejs keeps a small stable bridge core and isolates host-specific behavior 
 
 All notable changes to aibridgejs are summarized here. Older release detail was condensed after the 2026-06-10 review wave.
 
-## [Unreleased]
+## [0.6.0] - 2026-09-29
 
+### Breaking
+
+- `call()`: `timeoutMs` (including the 10 s default) is now measured from `call()` entry and covers the readiness wait, `adapter.post()` and the response wait, so a never-ready adapter rejects with `BridgeTimeoutError` instead of hanging forever. Migration: callers that intentionally relied on an unbounded readiness wait must pass `timeoutMs: 0` with their own `AbortSignal`.
+- `reset()`: registered `on()` listeners and the adapter subscription now survive `reset()`, as README and STABILITY already promised, and only `dispose()` removes them. Migration: code that used `reset()` to drop listeners must call the returned unsubscribe functions or `dispose()`.
+- `emit()`: an in-flight `emit()` without `signal`/`timeoutMs` is now rejected by `reset()` (`BridgeResetError`) and `dispose()` (`BridgeDisposedError`) instead of staying pinned on a hung transport and leaking the bridge. Migration: callers awaiting an option-less `emit()` across `reset()`/`dispose()` should catch `BridgeResetError`/`BridgeDisposedError`.
+- `createBridge()` / `bridge.on()`: a missing options object or an adapter without `ready`, `post`, `subscribe` and `dispose` functions now throws `BridgeError` at construction, and `on()` throws `BridgeError` for a non-function listener instead of registering it silently. Migration: pass a complete `BridgeAdapter` (stub any method you do not use) and a function listener, and catch `BridgeError` rather than `TypeError`.
+- `createIframeAdapter()` / `createFlutterAdapter()` / `detectBridgeAdapter()`: argument misuse (a host without `addEventListener`/`removeEventListener`, a non-object options argument, or a missing, `"*"` or non-exact `targetOrigin`) now throws `BridgeError` with an `aibridgejs: ` message prefix instead of a bare `Error` or `TypeError`. Migration: match these errors with `instanceof BridgeError` (still an `Error` subclass) instead of the old message text.
+
+### Changes
+
+- Changed: the signal passed to `adapter.ready()` is now per readiness round and aborts on `reset()` (reason `BridgeResetError`) as well as `dispose()` (reason `BridgeDisposedError`), so repeated reset-and-retry against a hung `adapter.ready()` no longer accumulates orphaned adapter listeners; adapters must detach their listeners on abort (the Flutter adapter already does).
+- Changed: argument-misuse messages follow the ai*js shape `aibridgejs: <subject> must be <constraint>`; the three iframe `targetOrigin` messages are merged into one.
 - Fixed: `emit()`'s `timeoutMs` now also bounds the readiness wait, not just the post-readiness phase, matching the documented `EmitOptions.timeoutMs` contract.
 - Fixed: the Flutter adapter now feature-checks whether the platform is already ready at construction, so a bridge created after the one-shot `flutterInAppWebViewPlatformReady` event no longer waits forever.
 - Fixed: `timeoutMs` (the `createBridge` default, per-call, and per-emit) is normalized before arming a timer — non-finite values (e.g. `Infinity`) and values above the 32-bit timer limit no longer fire almost immediately, and `NaN` falls back to the default instead of silently disabling the timer.
@@ -143,6 +165,9 @@ All notable changes to aibridgejs are summarized here. Older release detail was 
 - Fixed: `adapter.post()` is now called through a safe wrapper in `call()` and `emit()`, so a custom adapter that throws synchronously or returns a non-promise no longer leaks the pending entry's timer and abort listener.
 - Fixed: `isValidEnvelope()` and the event dispatch path now read each envelope field exactly once inside a guard, so a throwing or value-varying getter on an in-process envelope can no longer escape into the adapter's dispatch loop or hand different listeners different payload values.
 - Fixed: `detectBridgeAdapter()` now feature-checks the iframe branch the same way it already does for Flutter, so a host with a `parent` but no `addEventListener`/`removeEventListener` gets a descriptive error instead of a raw `TypeError`.
+- Fixed: `call()` and `emit()` made before readiness now post in the order they were made whatever options they pass; a `signal` or `timeoutMs` used to add a microtask hop that let a later option-less operation overtake.
+- Fixed: `adapter.ready()` is now called through the same wrapper as `adapter.post()`, so a custom adapter whose `ready()` throws synchronously or returns a non-promise no longer leaves a listener behind or rejects every call with a `TypeError`.
+- Docs: STABILITY documents the ai*js re-entrancy clause for inbound event fan-out, the `timeoutMs` normalisation rule and that a rejected `adapter.ready()` is cached until `reset()`; README/README_ZHTW describe the per-round adapter signal; CONTRIBUTING no longer calls the `emit()` API unexpanded.
 
 ## [0.5.9] - 2026-06-29
 
@@ -193,8 +218,8 @@ Run `pnpm lint` before PRs. If docs change, regenerate `llms-full.txt`.
 
 - Do not weaken iframe origin/source checks.
 - Keep envelopes JSON-safe and adapter-neutral.
-- Preserve `AbortSignal` semantics for `ready()` and `call()`.
-- Keep `emit()` behavior explicit until its API is intentionally expanded.
+- Preserve `AbortSignal` semantics for `ready()`, `call()` and `emit()`.
+- Keep every in-flight `call()` and `emit()` reclaimable by `reset()` and `dispose()`.
 - Add tests for reset/dispose/timeout paths when bridge state changes.
 
 ## License
