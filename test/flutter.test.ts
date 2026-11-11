@@ -2,9 +2,9 @@ import { describe, expect, test, vi } from "vitest";
 import { detectBridgeAdapter } from "../src/detect/index.js";
 import { BridgeError } from "../src/errors.js";
 import {
+  createFlutterAdapter,
   type FlutterHost,
   type FlutterInAppWebView,
-  createFlutterAdapter,
 } from "../src/flutter/index.js";
 import { createBridge } from "../src/index.js";
 import type { BridgeEnvelope } from "../src/types.js";

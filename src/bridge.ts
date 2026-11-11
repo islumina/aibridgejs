@@ -367,7 +367,6 @@ export function createBridge(options: BridgeOptions): Bridge {
     const signal = opts?.signal;
     const once = opts?.once === true;
 
-    // biome-ignore lint/style/useConst: hoisted so the unsubscribe closure can reference entry by identity
     let entry!: ListenerEntry;
 
     const unsubscribe = (): void => {

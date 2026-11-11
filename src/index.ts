@@ -1,10 +1,10 @@
 export { createBridge } from "./bridge.js";
 export {
-  BridgeError,
   BridgeDisposedError,
+  BridgeError,
+  BridgeRemoteError,
   BridgeResetError,
   BridgeTimeoutError,
-  BridgeRemoteError,
 } from "./errors.js";
 export type {
   Bridge,

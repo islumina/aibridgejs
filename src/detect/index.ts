@@ -1,9 +1,9 @@
 import {
+  createFlutterAdapter,
   type FlutterAdapterOptions,
   type FlutterHost,
-  createFlutterAdapter,
 } from "../flutter/index.js";
-import { type IframeAdapterOptions, createIframeAdapter } from "../iframe/index.js";
+import { createIframeAdapter, type IframeAdapterOptions } from "../iframe/index.js";
 import { invalid, isObject } from "../internal.js";
 import { createMockAdapter } from "../mock/index.js";
 import type { BridgeAdapter } from "../types.js";
