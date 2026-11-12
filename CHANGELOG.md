@@ -2,6 +2,12 @@
 
 All notable changes to aibridgejs are summarized here. Older release detail was condensed after the 2026-06-10 review wave.
 
+## [Unreleased]
+
+### Changes
+
+- Fixed: the bridge's inbound dispatch now reads an envelope's `kind`, and a response's `id`, exactly once inside a guard after validation, so an in-process envelope whose getter passes `isValidEnvelope()` and throws on a later read is dropped instead of escaping from the mock or Flutter adapter's `receive()` into its dispatch loop. The 0.6.0 envelope-getter fix covered validation and the response/event field reads but not these two re-reads.
+
 ## [0.6.0] - 2026-09-29
 
 ### Breaking

@@ -14,6 +14,7 @@ import type {
   BridgePlatform,
   CallOptions,
   EmitOptions,
+  EventEnvelope,
   OnOptions,
   ReadyOptions,
   ResponseEnvelope,
@@ -103,11 +104,30 @@ export function createBridge(options: BridgeOptions): Bridge {
     if (disposed) return;
     if (!isValidEnvelope(envelope)) return;
 
-    switch (envelope.kind) {
+    // isValidEnvelope() guards only its own reads. Read `kind` exactly once,
+    // inside a guard, before switching on it: a getter that passed validation
+    // may still throw on this later read and must not escape into the
+    // adapter's dispatch loop. The branches below take the same care with
+    // every other field they read.
+    let kind: BridgeEnvelope["kind"];
+    try {
+      kind = envelope.kind;
+    } catch {
+      return;
+    }
+
+    switch (kind) {
       case "response": {
-        // Read the id exactly once into a local: a value-varying getter must
-        // not look up one entry and settle another.
-        const id = envelope.id;
+        const response = envelope as ResponseEnvelope;
+        // Read the id exactly once into a local, inside a guard: a
+        // value-varying getter must not look up one entry and settle another,
+        // and a throwing one must not escape (see `kind` above).
+        let id: string;
+        try {
+          id = response.id;
+        } catch {
+          return;
+        }
         const entry = pending.get(id);
         if (!entry) return;
 
@@ -123,11 +143,11 @@ export function createBridge(options: BridgeOptions): Bridge {
         let errorObject: ResponseEnvelope["error"];
         let readThrew = false;
         try {
-          ok = envelope.ok;
+          ok = response.ok;
           if (ok) {
-            payload = envelope.payload;
+            payload = response.payload;
           } else {
-            errorObject = envelope.error;
+            errorObject = response.error;
           }
         } catch {
           ok = false;
@@ -168,7 +188,7 @@ export function createBridge(options: BridgeOptions): Bridge {
         let eventName: unknown;
         let eventPayload: unknown;
         try {
-          eventName = envelope.event;
+          eventName = (envelope as EventEnvelope).event;
           eventPayload = envelope.payload;
         } catch {
           return;

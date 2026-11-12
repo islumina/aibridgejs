@@ -13,6 +13,7 @@ Current review state after the 2026-09-29 ai*js 0.6.0 pass. Fixed historical fin
 
 ## Fixed Summary
 
+- Envelope `kind` / response `id` re-read (Unreleased, P3): the bridge reads both once inside a guard after `isValidEnvelope()`, so a getter that throws on a later read no longer escapes the mock/Flutter `receive()` dispatch loop.
 - `call()` deadline covers readiness (0.6.0, P1): `timeoutMs`, including the 10 s default, is armed at `call()` entry and bounds the readiness wait, `adapter.post()` and the response wait; a never-ready adapter now rejects with `BridgeTimeoutError`.
 - `reset()` listener survival (0.6.0, P2): code now matches the documented contract — `on()` listeners and the adapter subscription survive `reset()`; only `dispose()` removes them. README, README_ZHTW, STABILITY, JSDoc and llms-full agree.
 - Reclaimable `emit()` (0.6.0, P3): every in-flight `call()`/`emit()` lives in one registry that `reset()` (`BridgeResetError`) and `dispose()` (`BridgeDisposedError`) settle; a late `adapter.post()` settlement is ignored.
