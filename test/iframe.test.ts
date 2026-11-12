@@ -1,9 +1,9 @@
 import { describe, expect, test, vi } from "vitest";
 import { BridgeError } from "../src/errors.js";
 import {
+  createIframeAdapter,
   type IframeHost,
   type MessageEventLike,
-  createIframeAdapter,
 } from "../src/iframe/index.js";
 import type { BridgeEnvelope } from "../src/types.js";
 

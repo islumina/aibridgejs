@@ -18,17 +18,15 @@ describe("aibridgejs property: request/response id correlation", () => {
         // n drives the concurrency; `order` is a full-length permutation of
         // [0, n) that decides the order responses are pushed back, so the
         // routing invariant is exercised against arbitrary arrival orders.
-        fc
-          .integer({ min: 1, max: 50 })
-          .chain((n) =>
-            fc.record({
-              n: fc.constant(n),
-              order: fc.shuffledSubarray([...Array(n).keys()], {
-                minLength: n,
-                maxLength: n,
-              }),
+        fc.integer({ min: 1, max: 50 }).chain((n) =>
+          fc.record({
+            n: fc.constant(n),
+            order: fc.shuffledSubarray([...Array(n).keys()], {
+              minLength: n,
+              maxLength: n,
             }),
-          ),
+          }),
+        ),
         async ({ n, order }) => {
           const adapter = createMockAdapter();
           const requests: { id: string; method: string }[] = [];
