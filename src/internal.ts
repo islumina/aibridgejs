@@ -46,7 +46,10 @@ export function isValidEnvelope(value: unknown): value is BridgeEnvelope {
   // into a local before being tested twice (typeof + length), so a throwing
   // or value-varying getter can neither escape as an uncaught exception into
   // the adapter's dispatch loop nor pass a different value to the length
-  // check than the typeof check already validated (aibridgejs-11).
+  // check than the typeof check already validated (aibridgejs-11). The guard
+  // covers only these reads: a getter can pass here and throw on a later
+  // access, so callers must read any field they use again (the bridge reads
+  // `kind` and the response `id`) inside their own guard.
   try {
     const timestamp = v.timestamp;
     if (typeof timestamp !== "number" || !Number.isFinite(timestamp)) return false;
